@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stackchan.local/schemas/v1/device-event.json",
+  "title": "DeviceEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event_id", "type", "timestamp_ms", "source", "payload"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "event_id": {"type": "string", "minLength": 1, "maxLength": 96},
+    "type": {"type": "string", "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+$"},
+    "timestamp_ms": {"type": "integer", "minimum": 0},
+    "source": {"enum": ["device", "vision", "audio", "touch", "imu", "system", "simulator"]},
+    "correlation_id": {"type": ["string", "null"], "maxLength": 96},
+    "payload": {"type": "object"}
+  }
+}
+

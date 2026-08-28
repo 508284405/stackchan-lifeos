@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stackchan.local/schemas/v1/device-command.json",
+  "title": "DeviceCommand",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "command_id", "correlation_id", "issued_at_ms", "expires_at_ms", "kind", "payload"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "command_id": {"type": "string", "minLength": 1, "maxLength": 96},
+    "correlation_id": {"type": "string", "minLength": 1, "maxLength": 96},
+    "issued_at_ms": {"type": "integer", "minimum": 0},
+    "expires_at_ms": {"type": "integer", "minimum": 0},
+    "kind": {"enum": ["behavior.play", "speech.play", "attention.set", "system.stop"]},
+    "payload": {"type": "object"}
+  }
+}
+

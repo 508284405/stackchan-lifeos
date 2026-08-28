@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.pyc
+brain/data/*.db
+brain/data/*.db-*
+firmware/build/
+firmware/.pio/
+.DS_Store
+.env
+

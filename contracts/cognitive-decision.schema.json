@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stackchan.local/schemas/v1/cognitive-decision.json",
+  "title": "CognitiveDecision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "correlation_id", "intent", "response", "emotion", "behavior_intents", "attention", "memory", "confidence", "expires_at_ms"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "correlation_id": {"type": "string", "minLength": 1, "maxLength": 96},
+    "intent": {"enum": ["conversation", "answer", "task", "acknowledge", "fallback", "none"]},
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "text"],
+      "properties": {
+        "mode": {"enum": ["silent", "speak", "display"]},
+        "text": {"type": "string", "maxLength": 1000}
+      }
+    },
+    "emotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "intensity"],
+      "properties": {
+        "target": {"enum": ["neutral", "happy", "curious", "confused", "sleepy", "concerned", "sad", "excited"]},
+        "intensity": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    },
+    "behavior_intents": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "intensity", "priority"],
+        "properties": {
+          "name": {"enum": ["still", "blink", "small_nod", "head_tilt", "greet", "listen", "thinking", "speaking", "sleep", "wake"]},
+          "intensity": {"type": "number", "minimum": 0, "maximum": 1},
+          "priority": {"enum": ["agent", "user"]}
+        }
+      }
+    },
+    "attention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target"],
+      "properties": {"target": {"enum": ["user", "sound", "screen", "none"]}}
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["remember", "candidate"],
+      "properties": {
+        "remember": {"type": "boolean"},
+        "candidate": {"type": ["string", "null"], "maxLength": 500}
+      }
+    },
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "expires_at_ms": {"type": "integer", "minimum": 0}
+  }
+}
+
