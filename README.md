@@ -11,12 +11,14 @@
 
 ## 当前完成度
 
-这是第一份可执行架构基线，不宣称已经在实机上烧录验证：
+这是第一阶段主机可执行基线，不宣称已经在实机上烧录验证：
 
 - 设计文档、ADR、威胁模型、阶段路线和测试计划已落库。
 - 主机端有可测试的生命状态、语义门、行为仲裁和 LangGraph 图。
 - Codex 通过 provider/bridge 隔离；默认测试使用确定性 fake，不消耗账户配额。
-- 固件侧有可在桌面 CMake 编译的 C++17 DAG、安全与仲裁骨架。
+- 固件侧有可在桌面编译的 C++17 静态 DAG、图外 FastSafetyLoop、安全仲裁、固定容量协议网关、HAL fake 和 Phase 1 controller。
+- `firmware/idf/` 提供 ESP-IDF 5.5.4 的目标工程壳；当前机器未安装 IDF，因此只作为待验证 target shell。
+- `simulator/phase1/` 与 `tests/phase1/` 提供 JSONL 回放、会话/seq/TTL/断线/越界/故障验收。
 - 真机 BSP、CGraph 上游依赖和 Codex app-server 均设置显式验证门，未被伪装成已完成。
 
 ## 快速开始
@@ -24,6 +26,7 @@
 ```bash
 make test
 make firmware-test
+make phase1-acceptance
 make brain-demo
 ```
 

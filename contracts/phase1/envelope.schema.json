@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stackchan.local/schemas/lifeos.v1/envelope.json",
+  "title": "LifeOS v1 Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "type", "event_id", "device_id", "seq", "ts_ms", "payload"],
+  "properties": {
+    "schema": {"const": "lifeos.v1"},
+    "kind": {"enum": ["event", "command", "ack", "error", "hello"]},
+    "type": {"type": "string", "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+$", "maxLength": 64},
+    "event_id": {"type": "string", "minLength": 1, "maxLength": 96},
+    "command_id": {"type": "string", "minLength": 1, "maxLength": 96},
+    "correlation_id": {"type": "string", "minLength": 1, "maxLength": 96},
+    "device_id": {"type": "string", "minLength": 1, "maxLength": 64},
+    "seq": {"type": "integer", "minimum": 0},
+    "ts_ms": {"type": "integer", "minimum": 0},
+    "payload": {"type": "object"}
+  }
+}

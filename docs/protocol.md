@@ -5,6 +5,8 @@
 
 本协议是 LifeOS 自有的设备—主机协议，不是 Codex app-server 协议，也不是 CGraph API。它面向低带宽、有序但可能断线的 USB CDC/串行链路；未来局域网传输必须复用相同 envelope 和安全规则。
 
+Phase 1 的机器可读事实源为 `contracts/phase1/envelope.schema.json`；根目录其他 schema 属于主机领域/Phase 2 草案，不能直接作为设备 wire message。
+
 ## 1. 传输与 envelope
 
 每行一个 UTF-8 JSON 对象；禁止嵌入换行。设备和主机都必须拒绝超过 16 KiB 的单条消息，接收方应先按字节上限读取再解析 JSON。

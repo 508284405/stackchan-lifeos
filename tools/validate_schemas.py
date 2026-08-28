@@ -6,7 +6,7 @@ from pathlib import Path
 
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
-    schemas = sorted((root / "contracts").glob("*.schema.json"))
+    schemas = sorted((root / "contracts").rglob("*.schema.json"))
     if not schemas:
         raise SystemExit("no schemas found")
     ids: set[str] = set()
@@ -25,4 +25,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

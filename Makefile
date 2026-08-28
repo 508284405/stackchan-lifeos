@@ -1,6 +1,6 @@
-.PHONY: test brain-test firmware-test brain-demo schemas
+.PHONY: test brain-test firmware-test phase1-acceptance brain-demo schemas
 
-test: brain-test firmware-test schemas
+test: brain-test firmware-test phase1-acceptance schemas
 
 brain-test:
 	PYTHONPATH=. python3 -m pytest brain/tests -q
@@ -11,10 +11,12 @@ firmware-test:
 		cmake --build firmware/build && \
 		ctest --test-dir firmware/build --output-on-failure; \
 	else \
-		c++ -std=c++17 -Wall -Wextra -Werror -Ifirmware/include \
-			firmware/src/firmware.cpp firmware/tests/test_firmware.cpp \
-			-o /tmp/stackchan-firmware-tests && /tmp/stackchan-firmware-tests; \
+		./tools/run_firmware_tests.sh; \
 	fi
+
+phase1-acceptance:
+	PYTHONPATH=. python3 -m unittest discover -s tests/phase1 -p 'test_*.py' -v
+	PYTHONPATH=. python3 -m simulator.phase1.replay simulator/phase1/scenarios/nominal.jsonl
 
 brain-demo:
 	PYTHONPATH=. python3 -m brain.cli simulate --text "你好"

@@ -1,0 +1,2 @@
+{"schema":"lifeos.v1","kind":"hello","type":"hello.host","event_id":"hello-1","device_id":"stackchan-01","seq":1,"ts_ms":1000,"payload":{"protocol_versions":["lifeos.v1"],"session_nonce":"demo"}}
+{"schema":"lifeos.v1","kind":"command","type":"command.control","event_id":"home-1","device_id":"stackchan-01","seq":2,"ts_ms":1001,"payload":{"action":"home"}}
