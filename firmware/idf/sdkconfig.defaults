@@ -2,6 +2,9 @@ CONFIG_IDF_TARGET="esp32s3"
 CONFIG_COMPILER_CXX_EXCEPTIONS=n
 CONFIG_COMPILER_CXX_RTTI=n
 CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT=y
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+# Measured on ESP32-S3 rev 0.2 hardware: the gateway ingest path keeps
+# bounded 8 KiB payload buffers live across parse/ack temporaries, peaking at
+# ~44 KiB of main-task stack; 64 KiB leaves headroom for ISR frames.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=65536
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y

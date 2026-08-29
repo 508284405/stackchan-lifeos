@@ -3,6 +3,8 @@
 #include <cstring>
 #include <string_view>
 
+#include "driver/usb_serial_jtag.h"
+#include "driver/usb_serial_jtag_vfs.h"
 #include "esp_heap_caps.h"
 #include "esp_mac.h"
 #include "esp_system.h"
@@ -17,6 +19,10 @@ constexpr const char* kFirmware = "lifeos-phase1-hil-0.1.0";
 char input_line[lifeos::protocol::kMaxLineBytes + 2]{};
 char output_line[lifeos::protocol::kMaxLineBytes + 2]{};
 std::uint64_t output_sequence = 0;
+// Fixed-capacity singleton in static storage: the ingest call path alone
+// needs tens of kilobytes of stack for its bounded buffers, which no task
+// stack should have to carry on top.
+lifeos::protocol::Gateway gateway{};
 
 std::uint64_t now_ms() {
   return static_cast<std::uint64_t>(esp_timer_get_time() / 1000);
@@ -93,31 +99,50 @@ extern "C" void app_main() {
   lifeos::runtime::FastSafetyLoop safety;
   safety.heartbeat(now_ms());
 
-  setvbuf(stdin, nullptr, _IONBF, 0);
   setvbuf(stdout, nullptr, _IONBF, 0);
+  // Console output goes through the interrupt-driven USB Serial/JTAG driver.
+  // Input reads the driver directly with a bounded line buffer: the stdio
+  // stdin path trips newlib's "Uninitialized lock used" assertion once real
+  // bytes arrive, so fgets must not be used on this target.
+  usb_serial_jtag_driver_config_t usb_config = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+  ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&usb_config));
+  usb_serial_jtag_vfs_use_driver();
   std::printf("LIFEOS_HIL_READY %s motion=disabled\n", kFirmware);
 
-  lifeos::protocol::Gateway gateway;
-  while (std::fgets(input_line, sizeof(input_line), stdin) != nullptr) {
-    const auto result = gateway.ingest(input_line, now_ms());
+  std::size_t length = 0;
+  bool overflow = false;
+  std::uint8_t byte = 0;
+  while (true) {
+    if (usb_serial_jtag_read_bytes(&byte, 1, portMAX_DELAY) <= 0) {
+      continue;
+    }
+    if (byte == '\r') continue;
+    if (byte != '\n') {
+      if (length < std::size(input_line) - 1) {
+        input_line[length++] = static_cast<char>(byte);
+      } else {
+        // Keep consuming the oversized line; the stored prefix already
+        // exceeds kMaxLineBytes so ingest rejects it with TooLarge.
+        overflow = true;
+      }
+      continue;
+    }
+    const auto line = std::string_view(input_line, length);
+    const auto result = gateway.ingest(line, now_ms());
     if (!result.accepted) {
       emit_error(result);
-      continue;
-    }
-    if (result.duplicate) {
+    } else if (result.duplicate) {
       emit(result.response);
-      continue;
-    }
-    if (result.envelope.kind == lifeos::protocol::Kind::Hello) {
+    } else if (result.envelope.kind == lifeos::protocol::Kind::Hello) {
       emit_hello(result.envelope);
-      continue;
-    }
-    if (result.envelope.kind == lifeos::protocol::Kind::Command &&
-        result.envelope.type.view() == "command.control" &&
-        result.envelope.payload.view().find("\"action\":\"status\"") != std::string_view::npos) {
+    } else if (result.envelope.kind == lifeos::protocol::Kind::Command &&
+               result.envelope.type.view() == "command.control" &&
+               result.envelope.payload.view().find("\"action\":\"status\"") != std::string_view::npos) {
       emit_status(result.envelope);
-      continue;
+    } else {
+      emit_error(result);
     }
-    emit_error(result);
+    length = 0;
+    overflow = false;
   }
 }

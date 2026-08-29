@@ -17,9 +17,9 @@
 - 主机端有可测试的生命状态、语义门、行为仲裁和 LangGraph 图。
 - Codex 通过 provider/bridge 隔离；默认测试使用确定性 fake，不消耗账户配额。
 - 固件侧有可在桌面编译的 C++17 静态 DAG、图外 FastSafetyLoop、安全仲裁、固定容量协议网关、HAL fake 和 Phase 1 controller。
-- `firmware/idf/` 提供 ESP-IDF 5.5.4 的目标工程壳；当前机器未安装 IDF，因此只作为待验证 target shell。
+- `firmware/idf/` 提供 ESP-IDF 5.5.4 的目标工程壳；在隔离 ESP-IDF 环境完成 target build、真实烧录与只读 HIL 验证后已恢复设备原固件。
 - `simulator/phase1/` 与 `tests/phase1/` 提供 JSONL 回放、会话/seq/TTL/断线/越界/故障验收。
-- `firmware/idf/build/` 已在隔离 ESP-IDF v5.5.4 环境成功生成 ESP32-S3 HIL 镜像；镜像运动保持关闭，真实烧录需通过单独审批并使用 flash 备份。
+- `firmware/idf/build/` 在隔离 ESP-IDF v5.5.4 环境生成 ESP32-S3 HIL 镜像（运动保持关闭）；2026-08-29 已在真机完成烧录、USB 协议验证与 10 分钟只读 soak，验证后用全片备份恢复设备。执行器/传感器安全指标仍未测试。
 - 真机 BSP、CGraph 上游依赖和 Codex app-server 均设置显式验证门，未被伪装成已完成。
 
 ## 快速开始

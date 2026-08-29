@@ -18,6 +18,7 @@ from pathlib import Path
 
 SCHEMA = "lifeos.v1"
 MAX_LINE = 16 * 1024
+BANNER = b"LIFEOS_HIL_READY"
 
 
 def envelope(kind: str, typ: str, event_id: str, seq: int, payload: dict,
@@ -67,30 +68,52 @@ def run(port: str, timeout: float) -> int:
         attrs[4] = termios.B115200
         attrs[5] = termios.B115200
         termios.tcsetattr(fd, termios.TCSANOW, attrs)
-        # Only handshake and status are sent. Both are non-actuating/read-only.
-        os.write(fd, envelope("hello", "hello.host", "hil-hello-1", 1,
-                              {"protocol_versions": [SCHEMA], "session_nonce": "hil-readonly",
-                               "capabilities": ["status"], "raw_media": False}))
-        deadline = time.monotonic() + timeout
+
         data = bytearray()
         responses: list[dict] = []
-        status_sent = False
-        while time.monotonic() < deadline:
-            ready, _, _ = select.select([fd], [], [], min(0.1, deadline - time.monotonic()))
-            if not ready:
-                continue
-            data.extend(os.read(fd, 4096))
-            while b"\n" in data:
-                raw, _, rest = data.partition(b"\n")
-                data = bytearray(rest)
-                value = validate(raw)
-                if value is not None:
-                    responses.append(value)
-                    if not status_sent and value["kind"] == "hello":
-                        os.write(fd, envelope(
-                            "command", "command.control", "hil-status-1", 2,
-                            {"action": "status"}))
-                        status_sent = True
+        banner_seen = False
+
+        def pump(seconds: float, stop_on_banner: bool = False) -> None:
+            nonlocal banner_seen
+            end = time.monotonic() + seconds
+            while time.monotonic() < end:
+                ready, _, _ = select.select([fd], [], [],
+                                            min(0.1, max(0.0, end - time.monotonic())))
+                if not ready:
+                    continue
+                data.extend(os.read(fd, 4096))
+                while b"\n" in data:
+                    raw, _, rest = data.partition(b"\n")
+                    data[:] = rest
+                    if BANNER in raw:
+                        banner_seen = True
+                        if stop_on_banner:
+                            return
+                    value = validate(raw)
+                    if value is not None:
+                        responses.append(value)
+
+        # Opening a USB CDC port asserts DTR, which resets the ESP32-S3
+        # USB Serial/JTAG peripheral (rst:0x15). Drain the boot banner first so
+        # the handshake is not swallowed by the reboot; when the target was
+        # already running this is just a grace window.
+        pump(max(timeout, 3.0), stop_on_banner=True)
+
+        # Only handshake and status are sent. Both are non-actuating/read-only.
+        # The first hello can be consumed by the reset above, so the idempotent
+        # envelope is retried once with unchanged event_id and seq.
+        for _ in range(2):
+            os.write(fd, envelope("hello", "hello.host", "hil-hello-1", 1,
+                                  {"protocol_versions": [SCHEMA], "session_nonce": "hil-readonly",
+                                   "capabilities": ["status"], "raw_media": False}))
+            pump(timeout)
+            if any(item["kind"] == "hello" for item in responses):
+                break
+        if any(item["kind"] == "hello" for item in responses):
+            os.write(fd, envelope(
+                "command", "command.control", "hil-status-1", 2,
+                {"action": "status"}))
+            pump(timeout)
         hello_ok = any(
             item["kind"] == "hello"
             and item.get("payload", {}).get("firmware", "").startswith("lifeos-phase1-hil-")
