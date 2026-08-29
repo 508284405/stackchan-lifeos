@@ -7,7 +7,9 @@ __pycache__/
 brain/data/*.db
 brain/data/*.db-*
 firmware/build/
+firmware/idf/build/
+firmware/idf/sdkconfig
+firmware/idf/sdkconfig.old
 firmware/.pio/
 .DS_Store
 .env
-

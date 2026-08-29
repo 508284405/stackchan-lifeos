@@ -19,6 +19,7 @@
 - 固件侧有可在桌面编译的 C++17 静态 DAG、图外 FastSafetyLoop、安全仲裁、固定容量协议网关、HAL fake 和 Phase 1 controller。
 - `firmware/idf/` 提供 ESP-IDF 5.5.4 的目标工程壳；当前机器未安装 IDF，因此只作为待验证 target shell。
 - `simulator/phase1/` 与 `tests/phase1/` 提供 JSONL 回放、会话/seq/TTL/断线/越界/故障验收。
+- `firmware/idf/build/` 已在隔离 ESP-IDF v5.5.4 环境成功生成 ESP32-S3 HIL 镜像；镜像运动保持关闭，真实烧录需通过单独审批并使用 flash 备份。
 - 真机 BSP、CGraph 上游依赖和 Codex app-server 均设置显式验证门，未被伪装成已完成。
 
 ## 快速开始

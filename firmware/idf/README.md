@@ -14,5 +14,7 @@ idf.py -C firmware/idf build
 idf.py -C firmware/idf size-components
 ```
 
-The current development host does not have ESP-IDF installed, so this target is
-present but not claimed as compiled or flashed.
+The target has been compiled on the development host with ESP-IDF v5.5.4 and
+the ESP32-S3 toolchain. The resulting HIL image keeps motion disabled and
+speaks the LifeOS protocol over USB Serial JTAG. It has not been flashed in
+this session; the connected board remains on its prior, recoverable firmware.
