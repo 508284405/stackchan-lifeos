@@ -133,8 +133,11 @@ class Gateway final {
 
 Envelope make_ack(const Envelope& command, AckStatus status, bool idempotent,
                   std::uint64_t sequence, std::uint64_t now_ms);
+// `detail` carries a machine-readable reason token (e.g. parse_error_name)
+// next to the coarse `code` so hosts can distinguish rejection causes.
 Envelope make_error(const Envelope& source, ErrorCode code,
-                    std::uint64_t sequence, std::uint64_t now_ms);
+                    std::uint64_t sequence, std::uint64_t now_ms,
+                    std::string_view detail = {});
 
 template <typename T, std::size_t N>
 class BoundedQueue final {

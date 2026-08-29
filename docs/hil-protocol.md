@@ -27,6 +27,15 @@ device monotonic clocks are not synchronized before the hello exchange. TTL is
 covered with a shared virtual clock in the replay and firmware tests; real
 actuating commands must add an explicit clock-offset/session policy first.
 
+Error responses carry a machine-readable reason next to the coarse code:
+`{"code":"unauthorized","detail":"sequence_rejected"}` for sequence gaps,
+`{"code":"unsupported","detail":"unsupported_action"}` for actions the image
+does not implement. A reconnecting host must reset the target (or power-cycle
+it) before handshaking: opening the CDC port usually resets the ESP32-S3 via
+DTR, but this is not guaranteed, and the gateway keeps its session until the
+device reboots. An explicit session-resync/clock-offset policy is still owed
+before actuating commands.
+
 Before using a real port, verify the USB identity and firmware out of band.
 The runner cannot prove the target's hardware identity from a generic serial
 path alone. Verified 2026-08-29 against the LifeOS HIL image on ESP32-S3 rev 0.2

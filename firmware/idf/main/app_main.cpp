@@ -83,11 +83,10 @@ void emit_status(const lifeos::protocol::Envelope& request) {
   emit(response);
 }
 
-void emit_error(const lifeos::protocol::GatewayResult& result) {
+void emit_error(const lifeos::protocol::GatewayResult& result,
+                lifeos::protocol::ErrorCode code, std::string_view detail) {
   if (result.envelope.event_id.size == 0) return;
-  auto response = lifeos::protocol::make_error(
-      result.envelope, lifeos::protocol::ErrorCode::Unauthorized, 0, now_ms());
-  emit(response);
+  emit(lifeos::protocol::make_error(result.envelope, code, 0, now_ms(), detail));
 }
 
 }  // namespace
@@ -130,7 +129,13 @@ extern "C" void app_main() {
     const auto line = std::string_view(input_line, length);
     const auto result = gateway.ingest(line, now_ms());
     if (!result.accepted) {
-      emit_error(result);
+      auto code = lifeos::protocol::ErrorCode::Unauthorized;
+      if (result.error == lifeos::protocol::ParseError::UnsupportedKind) {
+        code = lifeos::protocol::ErrorCode::Unsupported;
+      } else if (result.error == lifeos::protocol::ParseError::QueueFull) {
+        code = lifeos::protocol::ErrorCode::Busy;
+      }
+      emit_error(result, code, lifeos::protocol::parse_error_name(result.error));
     } else if (result.duplicate) {
       emit(result.response);
     } else if (result.envelope.kind == lifeos::protocol::Kind::Hello) {
@@ -140,7 +145,7 @@ extern "C" void app_main() {
                result.envelope.payload.view().find("\"action\":\"status\"") != std::string_view::npos) {
       emit_status(result.envelope);
     } else {
-      emit_error(result);
+      emit_error(result, lifeos::protocol::ErrorCode::Unsupported, "unsupported_action");
     }
     length = 0;
     overflow = false;

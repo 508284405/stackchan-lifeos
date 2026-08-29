@@ -20,7 +20,7 @@
 
 ```text
 idf.py -C firmware/idf set-target esp32s3 && build && size-components
-→ PASS（最终镜像 0x36240 字节，SHA-256 b48c482d1297d9c26265ebf5e5fd665253accf0e33fb3fabcad64d133fda642a，app 分区剩余 79%）
+→ PASS（最终镜像 0x36350 字节，SHA-256 a72145824409cf460d110a581ddac206918dd2d55259c594db1851d484a93222，app 分区剩余 79%；0x36240/b48c482d 为修复 seq/detail 前的版本）
 idf.py -C firmware/idf flash
 → PASS（bootloader 0x0 / 分区表 0x8000 / app 0x10000，三段 Hash of data verified）
 启动 banner
@@ -43,6 +43,8 @@ python3 tools/soak.py --duration-seconds 28800
 | `hello.host`（含 device_id） | `hello.device`：marker `lifeos-phase1-hil-0.1.0`、`motion_enabled:false`、MAC 匹配、`heap_free` | PASS |
 | `command.control(status)` | `ack.command`：`status:completed, idempotent:true`，含 `heap_free`/`uptime_ms` | PASS |
 | 重复同一 command（相同 event_id） | `ack.command`：`status:duplicate`，不重复执行 | PASS |
+| seq 跳号错误的原因透传 | `error.protocol`：`code:unauthorized, detail:sequence_rejected` | PASS |
+| 未知 action 的原因透传 | `error.protocol`：`code:unsupported, detail:unsupported_action` | PASS |
 | 重复 hello（相同 event_id） | 静默（hello 重复不产生输出，不重复处理） | PASS（按设计） |
 | seq 跳号（9 after 2） | `error.protocol` 拒绝；随后合法 seq(3) 正常接受 | PASS |
 | TTL 过期（expires_at_ms < now） | `error.protocol` 拒绝 | PASS |
@@ -66,7 +68,9 @@ python3 tools/soak.py --duration-seconds 28800
 - 294 条 status 命令 → 294 个 `status:completed` ACK，0 丢失、0 错误、每命令恰好一个响应（296 行 = 1 hello + 294 ack + 1 会话初始 error）；
 - `uptime_ms` 全程严格单调（4568 → 604329，覆盖 600 秒），日志中 0 次 `ESP-ROM` 复位、0 次 panic/assert —— 设备全程未复位；
 - `heap_free` 全程恒定 286668，无增长趋势；
-- **记录为后续修正项**：长会话中设备输出 envelope 的 `seq` 字段出现重复/回绕（如 8→1、98→19→203），而关联 ID、uptime 与"每命令恰好一次执行"均正确。主机侧验收条件不依赖设备输出 seq 的单调性，但该字段与长稳语义的偏差需在下一轮修复并复验。
+- **seq 字段异常已根因修复并复验**：soak 中观察到的 `seq` 重复/回绕（8→1、98→19→203）根因是 `serialize()` 中 `number_text(seq)` 与 `number_text(ts_ms)` 的视图共享同一 `numbers[32]` 暂存缓冲，后者 `to_chars` 覆盖前者数据——输出 seq 实为 ts_ms 的前几位数字（host 可复现，现有测试只做 roundtrip 不断言字段值故漏网）。修复为每数字独立缓冲后，真机复验：hello seq=1，40/40 status ACK 的设备 seq 严格递增 2..41，拒绝路径响应 seq 连续（42/43/44），正式 runner 报告 hello seq=1 / ack seq=2。
+- **error 原因透传已实现并复验**：`make_error` 新增 `detail` 参数；`error.protocol` payload 现为 `{"code":"...","detail":"..."}`。真机验证：seq 跳号 → `{"code":"unauthorized","detail":"sequence_rejected"}`；未知 action → `{"code":"unsupported","detail":"unsupported_action"}` 且重复该 action 仅回 duplicate、不重复执行。`unsupported_kind→unsupported`、`queue_full→busy` 映射，其余保留 `unauthorized` 缺省。
+- **新设计缺口（待后续会话策略解决）**：主机重连而设备未复位时（macOS CDC open 的 DTR 复位是非确定性的），网关保留旧会话状态且无重同步入口，重连主机的 hello 会被 `sequence_rejected` 拒绝。`Gateway::reset_session()` 已存在但无触发路径；后续需定义显式会话重建/时钟偏移策略（与 hil-protocol.md 的 TTL 会话策略同属一项）。
 
 ## PASS / BLOCKED / NOT TESTED
 
@@ -96,6 +100,10 @@ python3 tools/soak.py --duration-seconds 28800
 - 读回复核：16 MiB 读回内容 SHA-256 与备份一致（`669507af…11b35`）；
 - 原固件复核：只读探测返回 `OK READY StackChan USB controller v1`；
 - 设备已恢复到验收前状态，LifeOS 镜像仅存在于 `firmware/idf/build/`（git 忽略，不入库）。
+
+## 第二轮修复复验与恢复（2026-08-29）
+
+修复提交后的镜像（0x36350 / a7214582…）经烧录清单复核后写入并完成上述 seq/detail 复验，随后再次整片恢复：16 MiB 读回与备份逐字节一致（SHA-256 `669507af…11b35`），原固件 STATUS 复核通过。
 
 ## 项目 Git 状态
 

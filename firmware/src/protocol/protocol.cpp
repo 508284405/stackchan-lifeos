@@ -310,10 +310,14 @@ bool serialize(const Envelope& envelope, char* output, std::size_t capacity,
       !valid_type(envelope.type.view())) return false;
   char* cursor = output;
   char* end = output + std::min(capacity, kMaxLineBytes + 1);
-  char numbers[32];
-  auto number_text = [&](std::uint64_t value) {
-    const auto converted = std::to_chars(numbers, numbers + sizeof(numbers), value);
-    return std::string_view(numbers, static_cast<std::size_t>(converted.ptr - numbers));
+  // One buffer per number: two string_views into shared scratch would alias,
+  // and the later to_chars overwrites the earlier view's digits before they
+  // are appended (observed on hardware as seq emitting ts_ms leading digits).
+  char seq_text[24];
+  char ts_text[24];
+  auto number_text = [](char* buffer, std::size_t capacity, std::uint64_t value) {
+    const auto converted = std::to_chars(buffer, buffer + capacity, value);
+    return std::string_view(buffer, static_cast<std::size_t>(converted.ptr - buffer));
   };
   if (!append_all(cursor, end, "{\"schema\":\"lifeos.v1\",\"kind\":\"",
                   kind_name(envelope.kind), "\",\"type\":") ||
@@ -328,8 +332,8 @@ bool serialize(const Envelope& envelope, char* output, std::size_t capacity,
        !quoted<0>(cursor, end, envelope.correlation_id.view()))) return false;
   if (!append_all(cursor, end, ",\"device_id\":") ||
       !quoted<0>(cursor, end, envelope.device_id.view()) ||
-      !append_all(cursor, end, ",\"seq\":", number_text(envelope.seq),
-                  ",\"ts_ms\":", number_text(envelope.ts_ms),
+      !append_all(cursor, end, ",\"seq\":", number_text(seq_text, sizeof(seq_text), envelope.seq),
+                  ",\"ts_ms\":", number_text(ts_text, sizeof(ts_text), envelope.ts_ms),
                   ",\"payload\":", envelope.payload.view(), "}\n")) return false;
   written = static_cast<std::size_t>(cursor - output);
   return written <= capacity;
@@ -396,13 +400,20 @@ Envelope make_ack(const Envelope& command, AckStatus status, bool idempotent,
 }
 
 Envelope make_error(const Envelope& source, ErrorCode code,
-                    std::uint64_t sequence, std::uint64_t now_ms) {
+                    std::uint64_t sequence, std::uint64_t now_ms,
+                    std::string_view detail) {
   static constexpr const char* names[] = {"invalid_schema", "unsupported", "unauthorized", "expired", "busy", "safety_blocked", "fault_latched", "rate_limited", "internal"};
   Envelope result = make_ack(source, AckStatus::Rejected, false, sequence, now_ms);
   result.kind = Kind::Error;
   set_text(result.type, "error.protocol");
-  char payload[96];
-  std::snprintf(payload, sizeof(payload), "{\"code\":\"%s\"}", names[static_cast<int>(code)]);
+  char payload[160];
+  if (detail.empty()) {
+    std::snprintf(payload, sizeof(payload), "{\"code\":\"%s\"}", names[static_cast<int>(code)]);
+  } else {
+    std::snprintf(payload, sizeof(payload), "{\"code\":\"%s\",\"detail\":\"%.*s\"}",
+                  names[static_cast<int>(code)],
+                  static_cast<int>(detail.size()), detail.data());
+  }
   set_text(result.payload, payload);
   return result;
 }

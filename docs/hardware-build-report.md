@@ -50,6 +50,12 @@ idf.py -C firmware/idf size-components
 2. **主任务栈溢出（实测峰值 ≈44 KiB）**：`GatewayResult`/`ParseResult` 携带 8 KiB payload 边界缓冲，ingest 峰值超过 8/16/40 KiB 栈（backtrace + HWM 采样证实）。修复：`Gateway` 单例移至静态存储；`CONFIG_ESP_MAIN_TASK_STACK_SIZE=65536`。
 3. **HIL runner 打开端口即复位**：macOS CDC-ACM open 断言 DTR → USB-JTAG 外设 `rst:0x15`，首条 hello 丢失。修复：`tools/hil_usb_runner.py` 增加启动 banner 宽限与幂等 hello 重试；命令语义不变（仍只发 hello + status，无 flash/reset/motion）。
 
+## 第二轮：seq 字段与错误原因修复（2026-08-29）
+
+soak 中设备输出 `seq` 非单调的根因在 `serialize()`：`number_text(seq)` 与 `number_text(ts_ms)` 的视图共享 `numbers[32]` 暂存缓冲（host 可复现，输出 seq 为 ts_ms 前几位数字；旧测试只做 roundtrip 不断言字段值）。修复为独立缓冲；`make_error` 增加 `detail` 参数，`app_main` 将 `unsupported_kind/queue_full` 映射为 `unsupported/busy`，其余错误携带 `parse_error_name` 原因。新增回归测试断言大数值 seq/ts 逐字输出与 detail payload。
+
+修复后镜像 `0x36350` 字节（SHA-256 `a72145824409cf460d110a581ddac206918dd2d55259c594db1851d484a93222`，app 分区余 79%），真机复验 seq 严格递增与 error detail 后再次整片恢复（读回逐字节一致）。
+
 ## 硬件与发布门禁
 
 - **PASS：** ESP-IDF 5.5.4 target build/size-components（含修复）。

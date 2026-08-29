@@ -66,6 +66,31 @@ int main() {
   auto error = make_error(parsed.envelope, ErrorCode::Expired, 9, 1002);
   assert(serialize(error, output, sizeof(output), written));
   assert(parse({output, written}).envelope.kind == Kind::Error);
+  auto detailed_error = make_error(parsed.envelope, ErrorCode::Unauthorized, 9, 1003,
+                                   "sequence_rejected");
+  assert(serialize(detailed_error, output, sizeof(output), written));
+  auto detailed_roundtrip = parse({output, written});
+  assert(detailed_roundtrip && detailed_roundtrip.envelope.kind == Kind::Error);
+  assert(detailed_roundtrip.envelope.payload.view() ==
+         "{\"code\":\"unauthorized\",\"detail\":\"sequence_rejected\"}");
+  auto plain_error = make_error(parsed.envelope, ErrorCode::Expired, 9, 1004);
+  assert(serialize(plain_error, output, sizeof(output), written));
+  assert(parse({output, written}).envelope.payload.view() == "{\"code\":\"expired\"}");
+
+  // Regression: seq and ts_ms must not share scratch space during serialize.
+  // The device once emitted ts_ms leading digits in the seq field because both
+  // number_text views aliased one buffer.
+  Envelope numbered = parsed.envelope;
+  numbered.kind = Kind::Event;
+  numbered.seq = 123456789;
+  numbered.ts_ms = 987654321012ull;
+  assert(serialize(numbered, output, sizeof(output), written));
+  assert(std::string_view(output, written).find(
+             "\"seq\":123456789,\"ts_ms\":987654321012") != std::string_view::npos);
+  auto numbered_roundtrip = parse({output, written});
+  assert(numbered_roundtrip && numbered_roundtrip.envelope.seq == 123456789 &&
+         numbered_roundtrip.envelope.ts_ms == 987654321012ull);
+
   Envelope escaped = parsed.envelope;
   const char escaped_id[] = "evt-\\\"quoted";
   escaped.event_id.size = sizeof(escaped_id) - 1;
