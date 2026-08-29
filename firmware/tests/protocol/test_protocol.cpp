@@ -135,5 +135,39 @@ int main() {
   assert(duplicate.accepted && duplicate.duplicate);
   gateway.reset_session();
   assert(!gateway.hello_complete());
+
+  // A hello re-establishes the session on a live gateway: a reconnecting host
+  // renegotiates the sequence window instead of being trapped by it. Only
+  // session bookkeeping is cleared.
+  assert(gateway.ingest(hello, 1000).accepted);
+  assert(gateway.ingest(command, 1000).accepted);
+  const char* resync_hello =
+      "{\"schema\":\"lifeos.v1\",\"kind\":\"hello\",\"type\":\"hello.host\","
+      "\"event_id\":\"hello-resync\",\"device_id\":\"stackchan-01\",\"seq\":1,\"ts_ms\":1000,\"payload\":{}}";
+  auto resync = gateway.ingest(resync_hello, 2000);
+  assert(resync.accepted && resync.envelope.kind == Kind::Hello);
+  const char* command_seq2 =
+      "{\"schema\":\"lifeos.v1\",\"kind\":\"command\",\"type\":\"command.control\","
+      "\"event_id\":\"cmd-2\",\"device_id\":\"stackchan-01\",\"seq\":2,\"ts_ms\":1000,"
+      "\"payload\":{\"action\":\"pause\"}}";
+  assert(gateway.ingest(command_seq2, 2001).accepted);
+
+  // A hello with a mismatched device_id, or with a garbage type, is rejected
+  // WITHOUT resetting the session; the live window keeps advancing.
+  const char* rogue_hello =
+      "{\"schema\":\"lifeos.v1\",\"kind\":\"hello\",\"type\":\"hello.host\","
+      "\"event_id\":\"hello-rogue\",\"device_id\":\"other-01\",\"seq\":1,\"ts_ms\":1000,\"payload\":{}}";
+  auto rogue = gateway.ingest(rogue_hello, 3000);
+  assert(!rogue.accepted && rogue.error == ParseError::InvalidField);
+  const char* bad_type_hello =
+      "{\"schema\":\"lifeos.v1\",\"kind\":\"hello\",\"type\":\"hello.nope\","
+      "\"event_id\":\"hello-bad\",\"device_id\":\"stackchan-01\",\"seq\":1,\"ts_ms\":1000,\"payload\":{}}";
+  auto bad = gateway.ingest(bad_type_hello, 3001);
+  assert(!bad.accepted && bad.error == ParseError::UnsupportedKind);
+  const char* command_seq3 =
+      "{\"schema\":\"lifeos.v1\",\"kind\":\"command\",\"type\":\"command.control\","
+      "\"event_id\":\"cmd-3\",\"device_id\":\"stackchan-01\",\"seq\":3,\"ts_ms\":1000,"
+      "\"payload\":{\"action\":\"status\"}}";
+  assert(gateway.ingest(command_seq3, 3002).accepted);
   std::cout << "lifeos protocol tests passed\n";
 }

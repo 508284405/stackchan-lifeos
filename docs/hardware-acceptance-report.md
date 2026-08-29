@@ -20,7 +20,7 @@
 
 ```text
 idf.py -C firmware/idf set-target esp32s3 && build && size-components
-→ PASS（最终镜像 0x36350 字节，SHA-256 a72145824409cf460d110a581ddac206918dd2d55259c594db1851d484a93222，app 分区剩余 79%；0x36240/b48c482d 为修复 seq/detail 前的版本）
+→ PASS（最终镜像 0x36390 字节，SHA-256 314f09fd6cd429e2a12c19bf543746a0a9781db511587994600accb5e1f4232e，app 分区剩余 79%；0x36350/a7214582 为会话重同步前的版本，0x36240/b48c482d 为 seq/detail 修复前的版本）
 idf.py -C firmware/idf flash
 → PASS（bootloader 0x0 / 分区表 0x8000 / app 0x10000，三段 Hash of data verified）
 启动 banner
@@ -70,7 +70,7 @@ python3 tools/soak.py --duration-seconds 28800
 - `heap_free` 全程恒定 286668，无增长趋势；
 - **seq 字段异常已根因修复并复验**：soak 中观察到的 `seq` 重复/回绕（8→1、98→19→203）根因是 `serialize()` 中 `number_text(seq)` 与 `number_text(ts_ms)` 的视图共享同一 `numbers[32]` 暂存缓冲，后者 `to_chars` 覆盖前者数据——输出 seq 实为 ts_ms 的前几位数字（host 可复现，现有测试只做 roundtrip 不断言字段值故漏网）。修复为每数字独立缓冲后，真机复验：hello seq=1，40/40 status ACK 的设备 seq 严格递增 2..41，拒绝路径响应 seq 连续（42/43/44），正式 runner 报告 hello seq=1 / ack seq=2。
 - **error 原因透传已实现并复验**：`make_error` 新增 `detail` 参数；`error.protocol` payload 现为 `{"code":"...","detail":"..."}`。真机验证：seq 跳号 → `{"code":"unauthorized","detail":"sequence_rejected"}`；未知 action → `{"code":"unsupported","detail":"unsupported_action"}` 且重复该 action 仅回 duplicate、不重复执行。`unsupported_kind→unsupported`、`queue_full→busy` 映射，其余保留 `unauthorized` 缺省。
-- **新设计缺口（待后续会话策略解决）**：主机重连而设备未复位时（macOS CDC open 的 DTR 复位是非确定性的），网关保留旧会话状态且无重同步入口，重连主机的 hello 会被 `sequence_rejected` 拒绝。`Gateway::reset_session()` 已存在但无触发路径；后续需定义显式会话重建/时钟偏移策略（与 hil-protocol.md 的 TTL 会话策略同属一项）。
+- **会话重同步缺口已修复并复验**：按 `docs/protocol.md` 既定语义"seq 重连后从 hello 协商"，结构合法的 hello（类型 `hello.host`/`hello.device` 且 device_id 匹配）现在总是重建会话簿记（seq 窗口、去重窗口、hello 标记），安全状态（暂停/故障/扭矩锁存）不受影响；device_id 不匹配或类型非法的 hello 被拒绝且不复位。固件 `Gateway::ingest` 与主机回放模拟器（`simulator/phase1/replay.py`）两端对齐，各补 3 项回归测试。真机验证：活会话（hello+3 status）上 runner 第二次重连未复位设备直接 PASS（此前该场景必被 `sequence_rejected` 卡死）；单会话内错配 hello 被拒后会话保留、合法 hello 重同步后旧 seq 正确拒绝、新会话 seq2 正常执行。仍待后续：执行器命令上线时的显式时钟偏移/TTL 会话策略。
 
 ## PASS / BLOCKED / NOT TESTED
 

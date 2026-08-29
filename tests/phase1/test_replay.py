@@ -82,6 +82,38 @@ class Phase1ReplayTests(unittest.TestCase):
         reused = envelope("reused-1", 2, action="status")
         self.assertEqual(device.feed(reused), "accepted")
 
+    def test_hello_on_live_session_renegotiates_sequence(self):
+        device = self.ready()
+        self.assertEqual(device.feed(envelope("cmd-1", 2, action="home")), "accepted")
+        reconnect = envelope("hello-reconnect", 1, kind="hello", type_="hello.host",
+                             protocol_versions=["lifeos.v1"], session_nonce="reconnect")
+        self.assertEqual(device.feed(reconnect), "accepted")
+        self.assertEqual(device.feed(envelope("cmd-2", 2, action="home")), "accepted")
+
+    def test_mismatched_or_malformed_hello_does_not_reset_session(self):
+        device = self.ready()
+        self.assertEqual(device.feed(envelope("cmd-1", 2, action="home")), "accepted")
+        rogue = envelope("rogue-1", 1, kind="hello", type_="hello.host",
+                         protocol_versions=["lifeos.v1"], session_nonce="rogue")
+        rogue["device_id"] = "other-01"
+        self.assertEqual(device.feed(rogue), "rejected")
+        bad_type = envelope("bad-type-1", 1, kind="hello", type_="hello.nope",
+                            protocol_versions=["lifeos.v1"], session_nonce="x")
+        self.assertEqual(device.feed(bad_type), "rejected")
+        self.assertEqual(device.feed(envelope("cmd-2", 3, action="home")), "accepted")
+
+    def test_session_resync_keeps_safety_state(self):
+        device = self.ready()
+        self.assertEqual(device.feed(envelope("estop-1", 2,
+                                              type_="command.emergency_stop")), "accepted")
+        reconnect = envelope("hello-reconnect", 1, kind="hello", type_="hello.host",
+                             protocol_versions=["lifeos.v1"], session_nonce="reconnect")
+        self.assertEqual(device.feed(reconnect), "accepted")
+        snapshot = device.snapshot()
+        self.assertFalse(snapshot["torque_enabled"])
+        self.assertEqual(snapshot["fault_latched"], "EMERGENCY_STOP")
+        self.assertEqual(device.feed(envelope("move-1", 2, action="home")), "rejected")
+
 
 if __name__ == "__main__":
     unittest.main()

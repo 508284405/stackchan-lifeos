@@ -56,6 +56,12 @@ soak 中设备输出 `seq` 非单调的根因在 `serialize()`：`number_text(se
 
 修复后镜像 `0x36350` 字节（SHA-256 `a72145824409cf460d110a581ddac206918dd2d55259c594db1851d484a93222`，app 分区余 79%），真机复验 seq 严格递增与 error detail 后再次整片恢复（读回逐字节一致）。
 
+## 第三轮：会话重同步（2026-08-29）
+
+按协议文档既定语义（`docs/protocol.md`："seq 重连后从 hello 协商"）实现会话重同步：`Gateway::ingest` 对结构合法的 hello（类型与 device_id 校验通过后）调用 `reset_session()` 重建会话簿记，主机回放模拟器同语义对齐；安全状态不随会话重同步清除。`docs/protocol.md` 的该约定此前在固件中从未实现，是重连被 `sequence_rejected` 卡死的根因。
+
+修复后镜像 `0x36390` 字节（SHA-256 `314f09fd6cd429e2a12c19bf543746a0a9781db511587994600accb5e1f4232e`，app 分区余 79%），真机复验活会话重连、错配 hello 不复位与 seq 窗口重协商后再次整片恢复（写入哈希校验 + STATUS 复核 + 读回比对）。
+
 ## 硬件与发布门禁
 
 - **PASS：** ESP-IDF 5.5.4 target build/size-components（含修复）。

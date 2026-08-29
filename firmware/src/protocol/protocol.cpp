@@ -435,6 +435,19 @@ GatewayResult Gateway::ingest(std::string_view line, std::uint64_t now_ms) {
     result.error = ParseError::InvalidSchema;
     return result;
   }
+  // A structurally valid hello always (re)establishes the session. The
+  // protocol hands sequence negotiation to hello after a reconnect, and a
+  // host that lands on a live gateway — the CDC open reset is not
+  // guaranteed — has no other way back in. Only session bookkeeping is
+  // cleared; safety state is untouched.
+  if (envelope.kind == Kind::Hello && envelope.type.view() != "hello.device" &&
+      envelope.type.view() != "hello.host") {
+    result.error = ParseError::UnsupportedKind;
+    return result;
+  }
+  if (envelope.kind == Kind::Hello) {
+    reset_session();
+  }
   if (duplicate_.contains(envelope.event_id.view())) {
     result.accepted = true;
     result.duplicate = true;
@@ -448,14 +461,8 @@ GatewayResult Gateway::ingest(std::string_view line, std::uint64_t now_ms) {
     return result;
   }
   if (envelope.kind == Kind::Hello) {
-    if (envelope.type.view() != "hello.device" && envelope.type.view() != "hello.host") {
-      result.error = ParseError::UnsupportedKind;
-      return result;
-    }
-    if (!hello_complete_) {
-      device_id_ = envelope.device_id;
-      hello_complete_ = true;
-    }
+    device_id_ = envelope.device_id;
+    hello_complete_ = true;
   }
   if (envelope.kind == Kind::Command) {
     Span issued_span{}, expires_span{};

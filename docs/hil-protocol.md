@@ -30,11 +30,14 @@ actuating commands must add an explicit clock-offset/session policy first.
 Error responses carry a machine-readable reason next to the coarse code:
 `{"code":"unauthorized","detail":"sequence_rejected"}` for sequence gaps,
 `{"code":"unsupported","detail":"unsupported_action"}` for actions the image
-does not implement. A reconnecting host must reset the target (or power-cycle
-it) before handshaking: opening the CDC port usually resets the ESP32-S3 via
-DTR, but this is not guaranteed, and the gateway keeps its session until the
-device reboots. An explicit session-resync/clock-offset policy is still owed
-before actuating commands.
+does not implement. A structurally valid hello always re-establishes the
+session (`docs/protocol.md`: sequence is renegotiated from hello after a
+reconnect), so a host that lands on a live gateway — the CDC open reset is
+not guaranteed — simply sends hello again; only session bookkeeping is
+cleared and safety state (pause, latched faults, torque) is untouched.
+Hellos with a mismatched device_id or an unknown type are rejected without
+resetting the session. Actuating commands still owe an explicit
+clock-offset/TTL session policy before they are enabled.
 
 Before using a real port, verify the USB identity and firmware out of band.
 The runner cannot prove the target's hardware identity from a generic serial

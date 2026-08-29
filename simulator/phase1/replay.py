@@ -106,6 +106,16 @@ class ReplayDevice:
         event_id = record["event_id"]
         if not isinstance(event_id, str) or not event_id:
             return self._reject("schema.event_id")
+        if record["kind"] == "hello":
+            if not self.connected or record["type"] not in {"hello.device", "hello.host"}:
+                return self._reject("hello.invalid")
+            if self.hello_complete:
+                # A valid hello re-establishes the session (seq renegotiation
+                # after reconnect). Only session bookkeeping is cleared;
+                # safety state such as pause or latched faults is untouched.
+                self.hello_complete = False
+                self.last_seq = None
+                self.seen_ids.clear()
         if event_id in self.seen_ids:
             self.result.accepted += 1
             self.result.duplicates += 1
