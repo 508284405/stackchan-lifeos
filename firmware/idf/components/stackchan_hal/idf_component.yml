@@ -1,0 +1,4 @@
+version: "0.1.0"
+description: "Small, safety-gated ESP-IDF HAL for StackChan/CoreS3"
+dependencies:
+  espressif/esp32-camera: "2.1.5"

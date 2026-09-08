@@ -1,0 +1,53 @@
+{
+  "status": "PASS",
+  "mode": "web-bridge-usb-read-only",
+  "observed_at": "2026-08-30T11:46:48Z",
+  "port": "/dev/cu.usbmodem1101",
+  "device_id": "stackchan-01",
+  "hardware_id": "1c:db:d4:ba:43:40",
+  "firmware": "lifeos-phase1-0.3.0",
+  "protocol": "lifeos.v1",
+  "bridge_session": {
+    "session_id": "ee941392-ec8b-4e11-be33-cd2c67c039be",
+    "state": "online"
+  },
+  "status_command": {
+    "command_id": "cmd-b20d93f5-96ce-4fab-9c62-38093590c993",
+    "state": "completed",
+    "result_status": "completed",
+    "idempotent": true
+  },
+  "health": {
+    "motion_enabled": true,
+    "torque_enabled": false,
+    "fault": false,
+    "feedback_frozen": false,
+    "safety_faults": 0,
+    "link_lost": false,
+    "io_state": "power_off",
+    "last_io_error": "none",
+    "feedback_age_ms": 0,
+    "yaw_deg": 5.94,
+    "pitch_deg": 28.75,
+    "heap_free": 8385536,
+    "psram_free": 8228724,
+    "uptime_ms": 879920
+  },
+  "recovery_backup_sha256": "669507af37296a09677b8b6ae831090a6cef357a634815011daf0f8622d11b35",
+  "checks": {
+    "device_identity_confirmed": true,
+    "bridge_session_online": true,
+    "status_ack_completed": true,
+    "health_snapshot_preserved": true,
+    "safe_idle": true,
+    "motion_command_sent": false,
+    "emergency_stop_sent": false,
+    "flash_or_erase_performed": false
+  },
+  "not_tested": [
+    "Web Bridge browser API/UI E2E",
+    "disconnect/reconnect through a long-lived Bridge process",
+    "real motion, emergency stop, touch and mechanical stall",
+    "8-hour soak"
+  ]
+}

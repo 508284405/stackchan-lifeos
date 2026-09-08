@@ -1,0 +1,16 @@
+{
+  "schema": "lifeos.control-plane.site-migration.v1",
+  "contract_version": "1.0.0",
+  "migration_id": "migration-device-01-04",
+  "phase": "prepare",
+  "source_site_id": "site-a",
+  "target_site_id": "site-b",
+  "source_edge_id": "edge-a",
+  "target_edge_id": "edge-b",
+  "device_ids": ["device-01"],
+  "migration_epoch": 4,
+  "issued_at_ms": 1700000000000,
+  "expires_at_ms": 1700000060000,
+  "requires_local_confirmation": true,
+  "reason": "approved site move"
+}

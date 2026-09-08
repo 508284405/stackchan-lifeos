@@ -1,0 +1,60 @@
+{
+  "status": "PASS",
+  "mode": "read-only-usb-jsonl",
+  "observed_at": "2026-08-30T11:38:11Z",
+  "port": "/dev/cu.usbmodem1101",
+  "usb": {
+    "vendor": "Espressif",
+    "product": "USB JTAG/serial debug unit",
+    "serial": "1C:DB:D4:BA:43:40"
+  },
+  "device": {
+    "device_id": "stackchan-01",
+    "board": "StackChan/CoreS3",
+    "mac": "1c:db:d4:ba:43:40",
+    "firmware": "lifeos-phase1-0.3.0",
+    "protocol": "lifeos.v1",
+    "motion_enabled": true
+  },
+  "hello": {
+    "type": "hello.device",
+    "seq": 3,
+    "correlation_id": "hil-hello-1"
+  },
+  "status_ack": {
+    "type": "ack.command",
+    "seq": 4,
+    "correlation_id": "hil-status-1",
+    "status": "completed",
+    "torque_enabled": false,
+    "paused": false,
+    "fault": false,
+    "link_lost": false,
+    "io_state": "power_off",
+    "feedback_age_ms": 0,
+    "heap_free": 8385536,
+    "psram_free": 8228724,
+    "uptime_ms": 348592
+  },
+  "recovery_backup": {
+    "path": "/Users/wangyu/Documents/Codex/2026-08-28/new-chat/work/hardware-backups/stackchan-1cdbd4ba4340-20260829-fullflash.bin",
+    "sha256": "669507af37296a09677b8b6ae831090a6cef357a634815011daf0f8622d11b35",
+    "verified": true
+  },
+  "checks": {
+    "port_discovered": true,
+    "usb_identity_matches_hello": true,
+    "lifeos_v1_hello": true,
+    "read_only_status_completed": true,
+    "safe_idle": true,
+    "motion_command_sent": false,
+    "flash_or_erase_performed": false
+  },
+  "not_tested": [
+    "real motion or emergency stop",
+    "touch-supervised pause/clear",
+    "mechanical hand-blocking",
+    "8-hour soak",
+    "Web Bridge serial adapter end-to-end API integration"
+  ]
+}

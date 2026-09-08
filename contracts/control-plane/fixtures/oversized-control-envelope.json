@@ -1,0 +1,6 @@
+{
+  "base_fixture": "valid-control-envelope.json",
+  "payload_field": "blob",
+  "extra_bytes": 17000,
+  "expected_limit": 16384
+}

@@ -1,73 +1,100 @@
 # Phase 1 ESP32-S3 硬件构建报告
 
-日期：2026-08-29（第二轮：烧录与真实 HIL 会话）
+更新时间：2026-08-31
 
-## 环境探测
+## 固定环境
 
-本机初始 shell 未发现可复用的 ESP-IDF 5.5.4 安装或其配套工具；本回合随后在 `work/esp-idf-5.5.4` 与 `work/idf-tools-5.5.4` 完成隔离安装：
-
-| 工具 | 结果 |
+| 项目 | 版本/位置 |
 | --- | --- |
-| `idf.py` | 隔离 ESP-IDF v5.5.4，可用 |
-| `cmake` | 隔离 CMake 3.30.5，可用 |
-| `ninja` | 隔离 Ninja 1.11.1，可用 |
-| `python3` | `/usr/bin/python3`，Python 3.9.6 |
-| ESP-IDF 目录 | `work/esp-idf-5.5.4`（detached pinned checkout `735507283d5b2f9fb363a1901172dbd9e847945d`） |
+| ESP-IDF | v5.5.4，隔离 checkout `735507283d5b2f9fb363a1901172dbd9e847945d` |
+| Xtensa GCC | `esp-14.2.0_20260121` |
+| CMake/Ninja | 3.30.5 / 1.11.1 |
+| 目标 | ESP32-S3，16 MiB flash |
+| 摄像头组件 | `espressif/esp32-camera` 2.1.5，锁定于 `firmware/idf/dependencies.lock` |
 
-未执行全局安装；所有工具均位于项目工作区的可回收隔离目录。构建使用 `IDF_COMPONENT_MANAGER=0`（项目无第三方 IDF component manifest）。
+工具链位于工作区外的隔离目录，不写入仓库依赖。构建入口
+`tools/build_target.sh` 显式传递 profile 对应的 `SDKCONFIG` 与 defaults，
+避免 HIL 配置污染生产镜像。
 
-## 项目检查
+## 构建结果
 
-目标工程位于 `firmware/idf`，目标为 `esp32s3`，并注册了以下固定核心源文件：
+```text
+IDF_PATH=/path/to/esp-idf-5.5.4 tools/build_target.sh production build size-components
+→ PASS；firmware/idf/build/stackchan_lifeos_phase1.bin
+→ CONFIG_LIFEOS_HIL_TEST_MODE 未设置，flash args 为 --flash_size 16MB
+→ image size 0x676e0，1 MiB app 分区剩余 0x98920（约 60%）
+→ SHA-256 `823c8a28c5fc605a60cde936b36a5aec812cbb07e484a946e54511c3cebab173`
 
-- `firmware/src/runtime/runtime.cpp`
-- `firmware/src/behavior/behavior.cpp`
-- `firmware/src/protocol/protocol.cpp`
-- `firmware/src/phase1/controller.cpp`
-
-上述源文件和 `lifeos/runtime/runtime.hpp` 均存在。`sdkconfig.defaults` 禁用 C++ exceptions/RTTI，启用 panic reboot；`app_main` 明确保持运动关闭，等待目标 HAL、自检和反馈校准。
-
-## 执行记录
-
-以下 target build 命令已执行并通过：
-
-```sh
-idf.py -C firmware/idf set-target esp32s3
-idf.py -C firmware/idf build
-idf.py -C firmware/idf size-components
+IDF_PATH=/path/to/esp-idf-5.5.4 tools/build_target.sh hil build
+→ PASS；firmware/idf/build-hil-16m/stackchan_lifeos_phase1.bin
+→ CONFIG_LIFEOS_HIL_TEST_MODE=y，flash args 为 --flash_size 16MB
+→ image size 0x69670，1 MiB app 分区剩余 0x96990（约 59%）
+→ SHA-256 `8d05c5359999e9ebbf7dbb231a8e70e945605df2588ff6052d5408eff944dd2d`
 ```
 
-证据：ESP32-S3 编译器完成 Ninja 构建；真机烧录并验证的 HIL image `stackchan_lifeos_phase1.bin` 为 `0x36240` 字节（SHA-256 `b48c482d1297d9c26265ebf5e5fd665253accf0e33fb3fabcad64d133fda642a`），1 MiB app 分区剩余 79%。提交后从同一源码重建的镜像尺寸一致（0x36240），SHA 变为 `1fa42c4f1b79996a516128a8e2fbf4d2f0b730cf5e45f3847bff1422e0499466`——差异仅来自镜像内嵌的 git describe 版本号与构建时间戳，代码相同。
-工具链记录：ESP-IDF `v5.5.4`，checkout `735507283d5b2f9fb363a1901172dbd9e847945d`；CMake `3.30.5`；Ninja `1.11.1.git.kitware.jobserver-1`；Xtensa 工具链 `esp-14.2.0_20260121`。
+两种镜像均包含真实 StackChan HAL；只有 HIL 镜像暴露维护运动和反馈冻结
+注入命令。普通 `make test` 仍只执行主机单元/回放/schema/Codex contract，
+不会在没有明确设备许可时刷写。
 
-## 烧录与目标机缺陷修复（真实硬件发现）
+## 目标 HAL 与安全路径
 
-烧录前清单（端口/MAC/Flash 容量/备份 SHA-256）全部核对通过后执行 `idf.py -C firmware/idf flash`：bootloader(0x0)/分区表(0x8000)/app(0x10000) 三段 `Hash of data verified`。
+- `firmware/src/hal/stackchan/stackchan.cpp` 使用 ESP-IDF driver-ng I²C，
+  避免与 `esp32-camera` 的旧 I²C driver 冲突。
+- 舵机走 UART1 1 Mbps SCS 协议，启动反馈自检后 torque off；失败后无论
+  readiness 标记如何都清除 torque 和 PY32 `VM_EN`。
+- 触摸、IMU、接近、相机和显示均在图任务中低频采样/渲染；20 Hz safety
+  task 独立读取反馈、检查 graph heartbeat、主机超时、急停、卡滞和限位。
+- 相机使用官方 StackChan GC0308 DVP pinout 与外部 20 MHz XCLK；普通 Phase 1 感知只证明
+  capture 元数据，Web 预览另有固定 JPEG 分块路径；不宣称人脸识别已完成。
 
-首次真实启动即暴露三个 host 测试无法覆盖的缺陷，均已在本目录修复并复验：
+## 设备与备份基线
 
-1. **stdin 立即 EOF + newlib 锁断言 panic**：启动控制台 VFS 的 stdin 非阻塞读取使 `fgets` 立即返回 EOF，主循环未运行；`app_main` 返回后触发 `assert failed: check_lock_nonzero locks.c:319`。修复：`app_main.cpp` 输入循环改用 `usb_serial_jtag_read_bytes()` 驱动直读 + 有界行缓冲（`kMaxLineBytes` 上界语义保持，超长行由 `parse()` 以 `TooLarge` 拒绝）。
-2. **主任务栈溢出（实测峰值 ≈44 KiB）**：`GatewayResult`/`ParseResult` 携带 8 KiB payload 边界缓冲，ingest 峰值超过 8/16/40 KiB 栈（backtrace + HWM 采样证实）。修复：`Gateway` 单例移至静态存储；`CONFIG_ESP_MAIN_TASK_STACK_SIZE=65536`。
-3. **HIL runner 打开端口即复位**：macOS CDC-ACM open 断言 DTR → USB-JTAG 外设 `rst:0x15`，首条 hello 丢失。修复：`tools/hil_usb_runner.py` 增加启动 banner 宽限与幂等 hello 重试；命令语义不变（仍只发 hello + status，无 flash/reset/motion）。
+已识别设备为 `/dev/cu.usbmodem1101`，MAC `1c:db:d4:ba:43:40`，ESP32-S3
+rev 0.2，16 MiB flash。完整原厂备份：
 
-## 第二轮：seq 字段与错误原因修复（2026-08-29）
+```text
+/Users/wangyu/Documents/Codex/2026-08-28/new-chat/work/hardware-backups/
+  stackchan-1cdbd4ba4340-20260829-fullflash.bin
+SHA-256: 669507af37296a09677b8b6ae831090a6cef357a634815011daf0f8622d11b35
+```
 
-soak 中设备输出 `seq` 非单调的根因在 `serialize()`：`number_text(seq)` 与 `number_text(ts_ms)` 的视图共享 `numbers[32]` 暂存缓冲（host 可复现，输出 seq 为 ts_ms 前几位数字；旧测试只做 roundtrip 不断言字段值）。修复为独立缓冲；`make_error` 增加 `detail` 参数，`app_main` 将 `unsupported_kind/queue_full` 映射为 `unsupported/busy`，其余错误携带 `parse_error_name` 原因。新增回归测试断言大数值 seq/ts 逐字输出与 detail payload。
+0.4.6 生产镜像已在用户授权后刷入；实机 `hello/status` 显示
+`camera_ready=true`、`fault=false`、`safety_faults=0`、`torque_enabled=false`，设备
+保持 safe-idle。两个 SCS 舵机的实体运动验收仍不在本轮范围内。
 
-修复后镜像 `0x36350` 字节（SHA-256 `a72145824409cf460d110a581ddac206918dd2d55259c594db1851d484a93222`，app 分区余 79%），真机复验 seq 严格递增与 error detail 后再次整片恢复（读回逐字节一致）。
+## 历史实机日志摘要（2026-08-29）
 
-## 第三轮：会话重同步（2026-08-29）
+```text
+AW9523 external bus outputs p0=0x07 p1=0x83 bus_en=1 boost_en=1
+PY32 VM_EN requested=1 readback=1 output=0x01
+servo self-test vm=1 yaw_ping=0 yaw_feedback=0 pitch_ping=0 pitch_feedback=0 torque_off=0
+LIFEOS_HIL_READY lifeos-phase1-0.2.0 motion=disabled board=degraded
+```
 
-按协议文档既定语义（`docs/protocol.md`："seq 重连后从 hello 协商"）实现会话重同步：`Gateway::ingest` 对结构合法的 hello（类型与 device_id 校验通过后）调用 `reset_session()` 重建会话簿记，主机回放模拟器同语义对齐；安全状态不随会话重同步清除。`docs/protocol.md` 的该约定此前在固件中从未实现，是重连被 `sequence_rejected` 卡死的根因。
+SCS 适配与官方实现一致：UART1 / 1 Mbps / APB / TX6 / RX7 / ID1、ID2；
+当前无回包更符合底座、线缆或舵机物理链路问题，不能用启动成功替代运动验收。
 
-修复后镜像 `0x36390` 字节（SHA-256 `314f09fd6cd429e2a12c19bf543746a0a9781db511587994600accb5e1f4232e`，app 分区余 79%），真机复验活会话重连、错配 hello 不复位与 seq 窗口重协商后再次整片恢复（写入哈希校验 + STATUS 复核 + 读回比对）。
+## Web 控制/摄像头预览增量构建（2026-08-31）
 
-## 硬件与发布门禁
+新增的 `command.camera_preview`、GC0308 YUV422→JPEG 转换、固定 QVGA JPEG 分块发送和
+USB 输出互斥已用同一 ESP-IDF 5.5.4 工具链完成 production/HIL target build。生产镜像
+已按授权刷入；HIL 镜像只构建、未刷写：
 
-- **PASS：** ESP-IDF 5.5.4 target build/size-components（含修复）。
-- **PASS：** HIL 镜像烧录、启动、真实 USB 协议验证（详见 `hardware-acceptance-report.md`）。
-- **PASS：** 设备恢复原始 16 MiB flash（读回 SHA 与备份一致，原固件 STATUS 复核）。
-- **BLOCKED→已解除：** 上一轮的串口写审批拒绝与串口 open 权限阻塞在本环境未复现。
-- **NOT TESTED：** StackChan/CoreS3 BSP、舵机反馈接线、限位和扭矩控制 HIL；急停 ≤50 ms、20 Hz 控制 tick、卡滞反馈冻结和 8 小时长稳。在这些证据补齐前，不宣称阶段 1 硬件出口已通过。
+| profile | image | size | SHA-256 |
+| --- | --- | ---: | --- |
+| production | `firmware/idf/build/stackchan_lifeos_phase1.bin` | `0x676e0` | `823c8a28c5fc605a60cde936b36a5aec812cbb07e484a946e54511c3cebab173` |
+| HIL | `firmware/idf/build-hil-16m/stackchan_lifeos_phase1.bin` | `0x69670` | `8d05c5359999e9ebbf7dbb231a8e70e945605df2588ff6052d5408eff944dd2d` |
 
-备份位置：`/Users/wangyu/Documents/Codex/2026-08-28/new-chat/work/hardware-backups/stackchan-1cdbd4ba4340-20260829-fullflash.bin`（SHA-256 `669507af37296a09677b8b6ae831090a6cef357a634815011daf0f8622d11b35`）。恢复前再次核对 `flash_id`、MAC 和端口；恢复命令必须显式指定该文件，不能使用未核验的 glob。
+0.4.6 生产镜像的真实摄像头帧、USB 带宽、HTTP MJPEG 和浏览器预览已在独立报告中
+通过；HIL 镜像仍未刷写。实体运动、触摸、急停端到端时延和 8 小时 soak 不由本次
+摄像头预览验收覆盖。
+
+## 真实预览部署证据（2026-08-31）
+
+- 写入三段生产镜像（bootloader、partition table、application）均返回
+  `Hash of data verified`，随后硬复位。
+- `tools/hil_usb_runner.py --port /dev/cu.usbmodem1101 --timeout 5` 返回
+  `lifeos-phase1-0.4.6`、`camera_ready=true`、`fault=false`、`safe_idle=true`。
+- `tools/web_bridge_real_server.py --enable-camera-preview` 运行时，HTTP MJPEG 6 秒收
+  到 13 个完整 JPEG part；浏览器真实页面显示实时帧。完整记录见
+  [`docs/web-control-camera-report.md`](web-control-camera-report.md)。

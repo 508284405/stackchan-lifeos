@@ -1,0 +1,11 @@
+menu "StackChan LifeOS"
+
+config LIFEOS_HIL_TEST_MODE
+    bool "Enable maintainer-only Phase 1 HIL fault and motion probes"
+    default n
+    help
+        Enables command.maintenance_motion and command.maintenance_fault.
+        Keep this disabled in production builds; it exists only for a local,
+        physically supervised hardware acceptance image.
+
+endmenu

@@ -28,6 +28,8 @@ enum class ErrorCode : std::uint8_t {
   FaultLatched, RateLimited, Internal,
 };
 
+enum class ManualAction : std::uint8_t { Input, Release };
+
 template <std::size_t N>
 struct BoundedText {
   std::array<char, N + 1> data{};
@@ -47,6 +49,22 @@ struct Envelope {
   BoundedText<kMaxPayloadBytes> payload;
 };
 
+struct ManualControlPayload {
+  BoundedText<kMaxIdBytes> lease_id;
+  std::uint64_t input_seq{0};
+  ManualAction action{ManualAction::Input};
+  float yaw{0.0F};
+  float pitch{0.0F};
+  std::uint64_t ttl_ms{0};
+  bool has_direction{false};
+};
+
+struct CameraPreviewPayload {
+  BoundedText<8> action;
+  std::uint64_t fps{0};
+  std::uint64_t duration_ms{0};
+};
+
 struct ParseResult {
   ParseError error{ParseError::None};
   Envelope envelope;
@@ -62,6 +80,14 @@ struct GatewayResult {
 };
 
 ParseResult parse(std::string_view line);
+// Validates the manual_control_v1 payload only when the caller builds with
+// LIFEOS_MANUAL_CONTROL_V1=1. Host compatibility builds default to 0; the
+// target build sets it explicitly after the device-side gate is reviewed.
+ParseError parse_manual_control_payload(const Envelope& envelope,
+                                        ManualControlPayload& output,
+                                        std::uint64_t now_ms);
+ParseError parse_camera_preview_payload(const Envelope& envelope,
+                                        CameraPreviewPayload& output);
 bool serialize(const Envelope& envelope, char* output, std::size_t capacity,
                std::size_t& written);
 const char* parse_error_name(ParseError error);

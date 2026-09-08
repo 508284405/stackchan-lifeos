@@ -1,0 +1,39 @@
+{
+  "status": "PASS",
+  "mode": "web-bridge-usb-controlled-reconnect",
+  "observed_at": "2026-08-30T12:40:58Z",
+  "port": "/dev/cu.usbmodem1101",
+  "device_id": "stackchan-01",
+  "hardware_id": "1c:db:d4:ba:43:40",
+  "firmware": "lifeos-phase1-0.3.0",
+  "disconnect_seconds": 2.0,
+  "first_session": {
+    "session_id": "48e5f94c-c404-449e-aebe-59185e0b11ba",
+    "state_after_disconnect": "offline"
+  },
+  "first_status": {
+    "command_id": "cmd-36ab99a9-4624-4e92-a7d3-7aaeaceca87a",
+    "state": "completed",
+    "torque_enabled": false,
+    "fault": false
+  },
+  "second_session": {
+    "session_id": "8a290b45-fb97-4bf1-a802-952d20e69795",
+    "state": "online"
+  },
+  "second_status": {
+    "command_id": "cmd-1b732b85-d4fe-4364-a14b-f00b3e804ac8",
+    "state": "completed",
+    "torque_enabled": false,
+    "fault": false
+  },
+  "checks": {
+    "first_safe_idle": true,
+    "second_safe_idle": true,
+    "new_session_after_reconnect": true,
+    "old_status_not_replayed": true,
+    "motion_command_sent": false,
+    "flash_or_erase_performed": false
+  },
+  "recovery_backup_sha256": "669507af37296a09677b8b6ae831090a6cef357a634815011daf0f8622d11b35"
+}

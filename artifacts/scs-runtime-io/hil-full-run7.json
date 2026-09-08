@@ -1,0 +1,1 @@
+{"mode": "hardware-hil", "reason": "{'schema': 'lifeos.v1', 'kind': 'error', 'type': 'error.protocol', 'event_id': 'ack-0', 'correlation_id': 'phase1-hil-6-3576824541', 'device_id': 'stackchan-01', 'seq': 58, 'ts_ms': 149310, 'payload': {'code': 'safety_blocked', 'detail': 'motion_blocked'}}", "status": "FAIL"}

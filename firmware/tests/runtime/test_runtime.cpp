@@ -1,6 +1,7 @@
 #include "lifeos/runtime/runtime.hpp"
 
 #include <cassert>
+#include <cmath>
 #include <cstdint>
 
 using namespace lifeos::runtime;
@@ -62,5 +63,10 @@ int main() {
   sample.yaw_limit = true;
   auto limited = safety.tick(sample, request);
   assert(!limited.torque_enabled && has_fault(limited.faults, SafetyFault::HardLimit));
+  assert(safety.clear_latched(true));
+  request = {true, NAN, 45.0F, 2000};
+  auto invalid = safety.tick(sample, request);
+  assert(!invalid.accepted && !invalid.torque_enabled &&
+         has_fault(invalid.faults, SafetyFault::InvalidCommand));
   return 0;
 }

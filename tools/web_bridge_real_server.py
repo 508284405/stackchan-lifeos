@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""Serve the Web Console against one real USB device with fixed live capabilities."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+
+import uvicorn
+
+from bridge import Bridge, SQLiteStore
+from bridge.api import create_app
+from bridge.domain import CommandState, DeviceSession, DiscoveryCandidate, SessionState
+from bridge.transports.serial import UsbSerialTransport
+
+
+TERMINAL_STATES = {
+    CommandState.COMPLETED,
+    CommandState.REJECTED,
+    CommandState.SAFETY_BLOCKED,
+    CommandState.OFFLINE,
+    CommandState.TIMEOUT,
+    CommandState.EXPIRED,
+}
+
+# This launcher is the production USB entry point, not a generic Bridge
+# factory. It must never quietly turn a live capability into a fake or
+# read-only one based on an omitted command-line flag.
+REAL_CAMERA_PREVIEW_ENABLED = True
+REAL_MANUAL_CONTROL_V1_ENABLED = True
+
+
+async def wait_online(bridge: Bridge, device_id: str, timeout_s: float) -> DeviceSession:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    next_hello_retry = loop.time() + 0.75
+    while loop.time() < deadline:
+        session = bridge.active_session_for_device(device_id)
+        if session is not None and session.state is SessionState.ONLINE:
+            return session
+        if loop.time() >= next_hello_retry:
+            await bridge.retry_host_hello(device_id)
+            next_hello_retry = loop.time() + 0.75
+        await asyncio.sleep(0.05)
+    raise RuntimeError("real device hello was not accepted before timeout")
+
+
+async def wait_command(bridge: Bridge, command_id: str, timeout_s: float):
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while asyncio.get_running_loop().time() < deadline:
+        command = bridge.get_command(command_id)
+        if command.state in TERMINAL_STATES:
+            return command
+        await asyncio.sleep(0.05)
+    return bridge.get_command(command_id)
+
+
+def build_app(
+    *,
+    port: str,
+    device_id: str,
+    hardware_id: str,
+    startup_grace_s: float,
+):
+    bridge = Bridge(
+        SQLiteStore(),
+        feature_gates={
+            "usb_add": True,
+            "media": REAL_CAMERA_PREVIEW_ENABLED,
+            "manual_control_v1": REAL_MANUAL_CONTROL_V1_ENABLED,
+        },
+    )
+    capabilities = {
+        "status",
+        "protocol",
+        "safety",
+        "camera",
+        "manual_control_v1",
+        "manual_preflight_v1",
+    }
+    candidate = DiscoveryCandidate(
+        candidate_id=f"candidate-{hardware_id}",
+        hardware_id=hardware_id,
+        device_id=device_id,
+        transport_id=f"usb:{port}",
+        capabilities=frozenset(capabilities),
+    )
+    bridge.discover(candidate)
+    bridge.claim(candidate.candidate_id)
+    transport = UsbSerialTransport(
+        port,
+        transport_id=f"usb:{port}:web-manual",
+        startup_grace_s=startup_grace_s,
+        manual_control_verified=True,
+    )
+    app = create_app(bridge)
+
+    @app.on_event("startup")
+    async def connect_real_device() -> None:
+        session = await bridge.connect(device_id, transport)
+        session = await wait_online(bridge, device_id, timeout_s=8.0)
+        command = await bridge.submit_command(device_id, "control.status")
+        command = await wait_command(bridge, command.command_id, timeout_s=8.0)
+        result = command.result or {}
+        if (
+            session.state is not SessionState.ONLINE
+            or command.state is not CommandState.COMPLETED
+            or result.get("torque_enabled") is not False
+            or result.get("fault") is not False
+        ):
+            await bridge.disconnect(session.session_id)
+            raise RuntimeError("real device did not reach completed safe-idle status")
+        if "manual_control_v1" not in session.capabilities:
+            await bridge.disconnect(session.session_id)
+            raise RuntimeError("real device did not declare manual_control_v1")
+        app.state.real_session_id = session.session_id
+
+    @app.on_event("shutdown")
+    async def disconnect_real_device() -> None:
+        session_id = getattr(app.state, "real_session_id", None)
+        if session_id is not None:
+            await bridge.disconnect(session_id)
+        else:
+            await transport.close()
+        bridge.store.close()
+
+    app.state.real_bridge = bridge
+    app.state.real_transport = transport
+    return app
+
+
+def run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8766)
+    parser.add_argument("--usb-port", required=True)
+    parser.add_argument("--device-id", default="stackchan-01")
+    parser.add_argument("--hardware-id", default="1c:db:d4:ba:43:40")
+    parser.add_argument("--startup-grace", type=float, default=3.0)
+    args = parser.parse_args(argv)
+    app = build_app(
+        port=args.usb_port,
+        device_id=args.device_id,
+        hardware_id=args.hardware_id,
+        startup_grace_s=args.startup_grace,
+    )
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(run())

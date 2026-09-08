@@ -17,3 +17,21 @@ TTL is represented in the command payload contract by `issued_at_ms` and
 ACKs use `ack.command` and statuses `accepted`, `clamped`, `completed`,
 `duplicate`, or `rejected`. Errors use `error.protocol` and the documented
 error-code vocabulary.
+
+`manual-control-v1.schema.json` is a proposed, separately versioned payload
+extension. The production firmware now declares `manual_control_v1` after the
+parser/replay and target-build checks, but the Bridge host lease gate remains
+disabled until supervised physical HIL evidence is complete; capability
+declaration alone is not an acceptance of real motion.
+
+`camera-preview-v1.schema.json` defines the explicit low-rate `camera_preview`
+command and bounded `camera.frame.begin/chunk/end` event payloads. The media
+feature gate and real-device preview remain separate from the base envelope
+schema; frames are ephemeral and are not persisted by the Bridge.
+
+While an online session is owned by the Bridge, the host sends the bounded
+`host.heartbeat` event described by `host-heartbeat-v1.schema.json` at a short,
+fixed interval. Its `media_enabled` value mirrors the Bridge media gate; it
+only refreshes the device-side link watchdog and never carries camera bytes or
+actuator data. The same heartbeat keeps a preview alive, but preview start/stop
+still requires the explicit camera command and capability gate.

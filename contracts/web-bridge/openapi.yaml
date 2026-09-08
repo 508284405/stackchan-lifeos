@@ -1,0 +1,1350 @@
+openapi: 3.1.0
+info:
+  title: StackChan LifeOS Web Bridge W1-W4 + control/media Host API
+  version: 0.1.0
+  description: |
+    Browser-facing host API for the W1 Web Bridge. This contract is deliberately
+    separate from the LifeOS device wire contract. The browser submits typed
+    Web DTOs; the Bridge validates and maps them to lifeos.v1 internally.
+
+    W1 covers health, registered-device listing, discovery-candidate claiming,
+    high-level command creation, and command lifecycle queries. W2 adds a
+    read-only device detail snapshot and the domain event stream. W4 adds a
+    bounded batch task host surface plus feature-gated maintenance challenge,
+    diagnostic export, and rollout task framework. W3 adds typed discrete
+    controls and the gated manual-control socket. The media route adds an
+    explicit, non-recording QVGA MJPEG preview; camera bytes never enter the
+    browser's device-wire or cognitive API. None of those routes enables
+    maintenance/OTA wire execution; manual-control execution remains gated.
+
+    The Web surface has no user authentication in this release. The process
+    must remain loopback-only unless the operator explicitly opts into the
+    trusted-LAN deployment boundary described in README.md.
+servers:
+  - url: http://127.0.0.1:8000
+    description: Default loopback example; do not expose this API publicly.
+security: []
+tags:
+  - name: health
+    description: Bridge process and deployment health.
+  - name: devices
+    description: Registered device summaries and explicit discovery claims.
+  - name: discovery
+    description: Feature-gated local USB serial scan and add (usb_add gate, default off).
+  - name: commands
+    description: Typed high-level command creation and lifecycle queries.
+  - name: media
+    description: Feature-gated, explicit, non-recording camera preview.
+  - name: maintenance
+    description: Feature-gated local-confirmation maintenance task framework.
+  - name: diagnostics
+    description: Allowlisted diagnostic export.
+  - name: rollout
+    description: Feature-gated single-target firmware rollout task framework.
+x-websocket:
+  /api/v1/events:
+    summary: Filtered Bridge domain event stream
+    subscription:
+      $ref: '#/components/schemas/EventSubscription'
+    messages:
+      - $ref: '#/components/schemas/BridgeEvent'
+      - type: resync_required
+        reason: cursor_expired
+  /api/v1/control:
+    summary: Gated host-only control connection
+    description: W3 lease/input prototype; manual_control_v1 is disabled by default and no raw wire fields are accepted.
+    messages:
+      - type: control.connected
+      - type: lease.acquired
+      - type: lease.renewed
+      - type: lease.released
+      - type: command.state.changed
+      - type: control.error
+paths:
+  /api/v1/health:
+    get:
+      operationId: getHealth
+      tags: [health]
+      summary: Get Web Bridge health
+      responses:
+        '200':
+          description: Bridge health and current registered/online counts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /api/v1/devices:
+    get:
+      operationId: listDevices
+      tags: [devices]
+      summary: List registered devices
+      description: W1 returns the current registered-device snapshot in `items`.
+      responses:
+        '200':
+          description: Registered devices, including an active session summary when available.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceListResponse'
+
+  /api/v1/devices/{device_id}:
+    get:
+      operationId: getDeviceDetail
+      tags: [devices]
+      summary: Get one device monitoring snapshot
+      description: Includes the latest known session and bounded health sample; absence is not healthy.
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '200':
+          description: Device identity, latest session, and latest bounded health sample.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceSummary'
+        '404':
+          description: The device is not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/devices/{device_id}/claim:
+    post:
+      operationId: claimDevice
+      tags: [devices]
+      summary: Claim a discovered device candidate
+      description: |
+        Claims a previously discovered candidate only when its stable device
+        identity matches the path parameter. Claiming is not a client-supplied
+        identity registration operation.
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimRequest'
+      responses:
+        '200':
+          description: The registered device record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceSummary'
+        '404':
+          description: The discovery candidate does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The candidate identity conflicts with the path or a registered/revoked identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The request body is structurally invalid or contains unknown fields.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/usb-scan:
+    post:
+      operationId: scanUsbPorts
+      tags: [discovery]
+      summary: Enumerate local USB serial ports
+      description: |
+        Feature-gated by `usb_add` (default off). Lists USB-serial-looking host
+        device nodes; ports already held by a live Bridge session are reported
+        `in-use` and never probed. Probing opens each remaining port for a
+        read-only lifeos.v1 hello handshake; opening a USB CDC port resets the
+        ESP32-S3 Serial/JTAG peripheral. No actuating command is ever sent.
+      responses:
+        '200':
+          description: One result per candidate port.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsbScanResponse'
+        '409':
+          description: The `usb_add` feature gate is disabled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/usb-devices:
+    post:
+      operationId: addUsbDevice
+      tags: [discovery]
+      summary: Register and connect one scanned device
+      description: |
+        Feature-gated by `usb_add` (default off). Device identity must come
+        from a prior scan result; the Bridge opens the port, performs the
+        pairing handshake, and waits for an online session before returning.
+        Re-adding a known hardware identity re-connects it and keeps the
+        original display name. On trusted-LAN bindings this route requires a
+        non-empty origin allowlist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UsbAddRequest'
+      responses:
+        '200':
+          description: The registered device, including its new session when online.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceSummary'
+        '409':
+          description: The port is held by an active session, or the identity conflicts with a registered/revoked device.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: The request body is structurally invalid or contains unknown fields.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '502':
+          description: The device did not complete hello before timeout.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/devices/{device_id}/commands:
+    post:
+      operationId: createDeviceCommand
+      tags: [commands]
+      summary: Create a typed high-level device command
+      description: |
+        Creates a server-owned CommandRecord. The Bridge chooses priority,
+        session, sequence, wire type, and wire envelope fields; none are
+        accepted from this request.
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommandRequest'
+      responses:
+        '202':
+          description: The Bridge created a CommandRecord; this does not mean the device accepted or completed it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandRecord'
+        '404':
+          description: The target device is not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The command is capability-unavailable and has a persisted rejected CommandRecord.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandRecord'
+        '422':
+          description: |
+            The request shape or high-level command mapping is invalid. A
+            shape error uses ErrorResponse; a mapper rejection may return the
+            persisted rejected CommandRecord. No device wire command is sent.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ErrorResponse'
+                  - $ref: '#/components/schemas/CommandRecord'
+
+  /api/v1/devices/{device_id}/emergency-stop:
+    post:
+      operationId: emergencyStopDevice
+      tags: [commands]
+      summary: Submit a best-effort high-priority emergency stop
+      description: Bypasses the ordinary host command queue; it is not a guarantee of local device stop.
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmergencyStopRequest'
+      responses:
+        '202':
+          description: The emergency command record was created or delivered to the current session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandRecord'
+        '404':
+          description: The target device is not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/devices/{device_id}/camera-preview:
+    post:
+      operationId: setCameraPreview
+      tags: [media]
+      summary: Explicitly start or stop the bounded camera preview
+      description: |
+        Feature-gated by the server `media` gate and the negotiated `camera`
+        capability. The request accepts no camera parameters. Start uses a
+        fixed QVGA JPEG stream at no more than two frames per second for a
+        short-lived session; frames are not persisted.
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CameraPreviewRequest'
+      responses:
+        '202':
+          description: The preview command record; accepted/completed are device evidence states.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandRecord'
+        '404':
+          description: The target device is not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Media gate or camera capability is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/devices/{device_id}/camera/stream:
+    get:
+      operationId: streamCameraPreview
+      tags: [media]
+      summary: Stream the latest complete JPEG frames as MJPEG
+      description: |
+        Requires a currently active preview session created by the POST route.
+        The response is `multipart/x-mixed-replace`; it is ephemeral and does
+        not start a device capture session by itself.
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      responses:
+        '200':
+          description: Multipart MJPEG stream with `image/jpeg` parts.
+          content:
+            multipart/x-mixed-replace:
+              schema:
+                type: string
+                format: binary
+        '403':
+          description: Request Origin is not allowlisted for a trusted-LAN deployment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The target device is not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Media gate, camera capability, session, or preview state is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/batch-tasks:
+    post:
+      operationId: createBatchTask
+      tags: [commands]
+      summary: Create a bounded best-effort batch task
+      description: Target outcomes remain independent; partial never rolls back a completed target.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchRequest'
+      responses:
+        '202':
+          description: BatchTask created; W1/W4 fake may already reach a terminal state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchTask'
+        '422':
+          description: Batch request shape or command validation failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/batch-tasks/{task_id}:
+    get:
+      operationId: getBatchTask
+      tags: [commands]
+      summary: Query batch aggregate and per-device results
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: BatchTask with immutable target snapshot and current outcomes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchTask'
+        '404':
+          description: Batch task does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/batch-tasks/{task_id}/cancel:
+    post:
+      operationId: cancelBatchTask
+      tags: [commands]
+      summary: Cancel not-yet-dispatched batch targets
+      parameters:
+        - $ref: '#/components/parameters/TaskId'
+      responses:
+        '200':
+          description: Cancelled aggregate; already dispatched targets keep their actual result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchTask'
+        '404':
+          description: Batch task does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The device lacks the negotiated safety capability.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandRecord'
+        '422':
+          description: The request body is structurally invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/commands/{command_id}:
+    get:
+      operationId: getCommand
+      tags: [commands]
+      summary: Query a command lifecycle record
+      parameters:
+        - $ref: '#/components/parameters/CommandId'
+      responses:
+        '200':
+          description: The current server-side command record, including terminal evidence when present.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandRecord'
+        '404':
+          description: The command ID does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/v1/devices/{device_id}/maintenance/prepare:
+    post:
+      operationId: prepareMaintenance
+      tags: [maintenance]
+      summary: Prepare a session-bound, one-use local-confirmation challenge
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MaintenancePrepareRequest' }
+      responses:
+        '202': { description: Challenge task awaiting device-local confirmation, content: { application/json: { schema: { $ref: '#/components/schemas/MaintenanceTask' } } } }
+        '409': { description: Feature or negotiated capability unavailable, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+
+  /api/v1/maintenance-tasks/{task_id}/execute:
+    post:
+      operationId: executeMaintenance
+      tags: [maintenance]
+      summary: Execute only after the matching device-local confirmation event
+      parameters: [ { $ref: '#/components/parameters/TaskId' } ]
+      responses:
+        '202': { description: Host task result; no wire operation is currently implemented, content: { application/json: { schema: { $ref: '#/components/schemas/MaintenanceTask' } } } }
+        '409': { description: Structured capability rejection, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+
+  /api/v1/maintenance-tasks/{task_id}:
+    get:
+      operationId: getMaintenanceTask
+      tags: [maintenance]
+      parameters: [ { $ref: '#/components/parameters/TaskId' } ]
+      responses:
+        '200': { description: Maintenance task, content: { application/json: { schema: { $ref: '#/components/schemas/MaintenanceTask' } } } }
+
+  /api/v1/devices/{device_id}/diagnostics:
+    get:
+      operationId: exportDiagnostics
+      tags: [diagnostics]
+      summary: Export an allowlisted, integrity-hashed diagnostic bundle
+      parameters: [ { $ref: '#/components/parameters/DeviceId' } ]
+      responses:
+        '200': { description: Safe diagnostic bundle, content: { application/json: { schema: { $ref: '#/components/schemas/DiagnosticBundle' } } } }
+
+  /api/v1/devices/{device_id}/rollout-tasks:
+    post:
+      operationId: createRolloutTask
+      tags: [rollout]
+      summary: Create a single-target firmware rollout task
+      parameters: [ { $ref: '#/components/parameters/DeviceId' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/RolloutRequest' } } }
+      responses:
+        '202': { description: Rollout task, content: { application/json: { schema: { $ref: '#/components/schemas/RolloutTask' } } } }
+
+  /api/v1/rollout-tasks/{task_id}/preflight:
+    post:
+      operationId: preflightRolloutTask
+      tags: [rollout]
+      parameters: [ { $ref: '#/components/parameters/TaskId' } ]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/RolloutPreflightRequest' } } }
+      responses:
+        '202': { description: Preflight result, content: { application/json: { schema: { $ref: '#/components/schemas/RolloutTask' } } } }
+
+  /api/v1/rollout-tasks/{task_id}/execute:
+    post:
+      operationId: executeRolloutTask
+      tags: [rollout]
+      parameters: [ { $ref: '#/components/parameters/TaskId' } ]
+      responses:
+        '202': { description: Rollout result, content: { application/json: { schema: { $ref: '#/components/schemas/RolloutTask' } } } }
+        '409': { description: Feature or precondition gate rejection, content: { application/json: { schema: { $ref: '#/components/schemas/ErrorResponse' } } } }
+
+  /api/v1/rollout-tasks/{task_id}:
+    get:
+      operationId: getRolloutTask
+      tags: [rollout]
+      parameters: [ { $ref: '#/components/parameters/TaskId' } ]
+      responses:
+        '200': { description: Rollout task, content: { application/json: { schema: { $ref: '#/components/schemas/RolloutTask' } } } }
+
+components:
+  parameters:
+    DeviceId:
+      name: device_id
+      in: path
+      required: true
+      description: Stable server-known device identity; this is not taken from the JSON body.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 64
+    CommandId:
+      name: command_id
+      in: path
+      required: true
+      description: Server-generated command identifier.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 96
+    TaskId:
+      name: task_id
+      in: path
+      required: true
+      description: Server-generated maintenance, rollout, or batch task identifier.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 96
+
+  schemas:
+    ClaimRequest:
+      title: ClaimRequest
+      type: object
+      additionalProperties: false
+      required: [candidate_id]
+      properties:
+        candidate_id:
+          type: string
+          minLength: 1
+          maxLength: 96
+          description: Discovery candidate identifier produced by Bridge discovery.
+
+    UsbScanResponse:
+      title: UsbScanResponse
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/UsbScanResultItem'
+
+    UsbScanResultItem:
+      title: UsbScanResultItem
+      type: object
+      additionalProperties: false
+      required: [path, state]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: Host serial device path.
+        state:
+          type: string
+          enum: [online, no-response, busy, in-use]
+          description: |
+            `online` means a lifeos.v1 hello.device was received; `in-use`
+            marks a port already held by a live Bridge session (never probed);
+            `busy` means the port could not be opened; `no-response` means the
+            port answered no valid hello.
+        identity:
+          type: object
+          additionalProperties: false
+          properties:
+            device_id:
+              type: string
+              maxLength: 96
+            hardware_id:
+              type: string
+              maxLength: 96
+            board:
+              type: [string, 'null']
+            firmware:
+              type: [string, 'null']
+        reason:
+          type: [string, 'null']
+          maxLength: 256
+
+    UsbAddRequest:
+      title: UsbAddRequest
+      type: object
+      additionalProperties: false
+      required: [path, device_id, hardware_id]
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 128
+        device_id:
+          type: string
+          minLength: 1
+          maxLength: 96
+        hardware_id:
+          type: string
+          minLength: 1
+          maxLength: 96
+          description: Stable hardware identity from a prior scan result.
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 96
+          description: Applied only on first registration; re-adding keeps the original name.
+
+    CommandRequest:
+      title: CommandRequest
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          minLength: 1
+          maxLength: 64
+          enum:
+            - control.status
+            - control.pause
+            - control.preflight
+            - control.resume
+            - control.home
+            - control.clear_fault
+            - emergency_stop
+            - manual_control
+            - behavior.play
+            - speech.play
+            - camera.preview.start
+            - camera.preview.stop
+          description: Registered high-level Web command name; never a lifeos.v1 wire type. `manual_control` is gate-only in W1.
+        params:
+          $ref: '#/components/schemas/CommandParams'
+          default: {}
+        ttl_ms:
+          type: integer
+          minimum: 1
+          maximum: 1500
+          default: 1500
+          description: Requested command lifetime; the Bridge enforces the 1.5 second W1 ceiling.
+        idempotency_key:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 96
+          default: null
+          description: Optional HTTP retry key, scoped to this device; it is not a second device-wire key.
+        correlation_id:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 96
+          default: null
+          description: Optional caller correlation value carried in the server-side record and mapped command.
+
+    CameraPreviewRequest:
+      title: CameraPreviewRequest
+      type: object
+      additionalProperties: false
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [start, stop]
+          description: Explicit preview lifecycle action; resolution, FPS, and quality are server-owned.
+
+    CommandParams:
+      title: CommandParams
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          maxLength: 128
+          description: Optional bounded operator reason.
+        local_confirmation:
+          type: boolean
+          const: true
+          description: Must be exactly true for control.clear_fault; not accepted for other command types.
+        name:
+          type: string
+          maxLength: 64
+          description: Registered behavior name; required for behavior.play.
+        intensity:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Bounded behavior intensity; not a hardware parameter.
+        duration_ms:
+          type: integer
+          minimum: 1
+          maximum: 30000
+          description: Behavior duration ceiling.
+        text:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: Bounded speech text; required for speech.play.
+        voice:
+          type: string
+          enum: [default, calm, bright]
+
+    EmergencyStopRequest:
+      title: EmergencyStopRequest
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: [string, 'null']
+          maxLength: 128
+        idempotency_key:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 96
+        correlation_id:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 96
+
+    BatchRequest:
+      title: BatchRequest
+      type: object
+      additionalProperties: false
+      required: [device_ids, command_type]
+      properties:
+        device_ids:
+          type: array
+          minItems: 1
+          maxItems: 200
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+        command_type:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: High-level registered Web command, never a raw device type.
+        params:
+          type: object
+        ttl_ms:
+          type: integer
+          minimum: 1
+          maximum: 1500
+          default: 1500
+        deadline_ms:
+          type: integer
+          minimum: 1
+          maximum: 60000
+          default: 5000
+
+    BatchTask:
+      title: BatchTask
+      type: object
+      additionalProperties: false
+      required: [task_id, command_type, params, targets, created_at, expires_at, aggregate_state, correlation_id]
+      properties:
+        task_id:
+          type: string
+          minLength: 1
+          maxLength: 96
+        command_type:
+          type: string
+        params:
+          type: object
+        targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/BatchTarget'
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+        aggregate_state:
+          type: string
+          enum: [pending, running, completed, partial, failed, cancelled, expired]
+        correlation_id:
+          type: [string, 'null']
+
+    BatchTarget:
+      title: BatchTarget
+      type: object
+      additionalProperties: false
+      required: [device_id, state, command_id, result, error, finished_at]
+      properties:
+        device_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        state:
+          type: string
+          enum: [pending, dispatched, completed, rejected, offline, timeout, cancelled, expired]
+        command_id:
+          type: [string, 'null']
+        result:
+          type: [object, 'null']
+        error:
+          type: [object, 'null']
+        finished_at:
+          type: [string, 'null']
+          format: date-time
+
+    HealthResponse:
+      title: HealthResponse
+      type: object
+      additionalProperties: false
+      required:
+        - ok
+        - service
+        - bind_host
+        - web_no_auth_trusted_lan
+        - origin_allowlist_configured
+        - registered_devices
+        - online_devices
+        - feature_gates
+      properties:
+        ok:
+          type: boolean
+        service:
+          type: string
+          const: web_bridge
+        bind_host:
+          type: string
+        web_no_auth_trusted_lan:
+          type: boolean
+        origin_allowlist_configured:
+          type: boolean
+        registered_devices:
+          type: integer
+          minimum: 0
+        online_devices:
+          type: integer
+          minimum: 0
+        feature_gates:
+          type: object
+          additionalProperties: false
+          required: [control, manual_control_v1, media]
+          properties:
+            control:
+              type: boolean
+            manual_control_v1:
+              type: boolean
+            media:
+              type: boolean
+
+    DeviceListResponse:
+      title: DeviceListResponse
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeviceSummary'
+
+    DeviceSummary:
+      title: DeviceSummary
+      type: object
+      additionalProperties: false
+      required:
+        - device_id
+        - hardware_id
+        - display_name
+        - site_id
+        - transport_hint
+        - firmware_version
+        - protocol_version
+        - capabilities
+        - desired_config_version
+        - last_seen_at
+        - lifecycle_state
+        - session
+      properties:
+        device_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        hardware_id:
+          type: string
+          minLength: 1
+        display_name:
+          type: string
+        site_id:
+          type: string
+        transport_hint:
+          type: [string, 'null']
+        firmware_version:
+          type: [string, 'null']
+        protocol_version:
+          type: [string, 'null']
+        capabilities:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+        desired_config_version:
+          type: [string, 'null']
+        last_seen_at:
+          type: [string, 'null']
+          format: date-time
+        lifecycle_state:
+          type: string
+          enum: [discovered, registered, revoked]
+        session:
+          oneOf:
+            - $ref: '#/components/schemas/DeviceSession'
+            - type: 'null'
+        health:
+          oneOf:
+            - $ref: '#/components/schemas/HealthSample'
+            - type: 'null'
+
+    HealthSample:
+      title: HealthSample
+      type: object
+      additionalProperties: true
+      description: Bounded device health summary; missing sample means unknown, not healthy.
+      properties:
+        heap:
+          type: integer
+          minimum: 0
+        uptime_ms:
+          type: integer
+          minimum: 0
+        faults:
+          type: array
+          items: {}
+        motion_enabled:
+          type: boolean
+        torque_enabled:
+          type: boolean
+        paused:
+          type: boolean
+
+    EventSubscription:
+      title: EventSubscription
+      type: object
+      additionalProperties: false
+      description: At least one of device_ids or visible_devices=true is required.
+      properties:
+        device_ids:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 64
+        visible_devices:
+          type: boolean
+          const: true
+        cursor:
+          type: [string, integer]
+          minimum: 0
+          default: 0
+        include_telemetry:
+          type: boolean
+          default: true
+
+    BridgeEvent:
+      title: BridgeEvent
+      type: object
+      additionalProperties: false
+      required:
+        - event_id
+        - type
+        - occurred_at
+        - device_id
+        - session_id
+        - command_id
+        - correlation_id
+        - payload
+        - cursor
+      properties:
+        event_id:
+          type: string
+          minLength: 1
+          maxLength: 96
+        type:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        device_id:
+          type: [string, 'null']
+        session_id:
+          type: [string, 'null']
+        command_id:
+          type: [string, 'null']
+        correlation_id:
+          type: [string, 'null']
+        payload:
+          type: object
+        cursor:
+          type: string
+
+    DeviceSession:
+      title: DeviceSession
+      type: object
+      additionalProperties: false
+      required:
+        - session_id
+        - device_id
+        - edge_id
+        - transport_id
+        - state
+        - connected_at
+        - last_heartbeat_at
+        - capabilities
+        - rx_seq
+        - tx_seq
+        - active_control_lease
+        - seen_event_ids
+        - host_hello_sent
+      description: Session summary; the nonce is intentionally never exposed to the browser.
+      properties:
+        session_id:
+          type: string
+          minLength: 1
+          maxLength: 96
+        device_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        edge_id:
+          type: string
+        transport_id:
+          type: string
+        state:
+          type: string
+          enum: [negotiating, online, degraded, offline, maintenance, rejected]
+        connected_at:
+          type: string
+          format: date-time
+        last_heartbeat_at:
+          type: [string, 'null']
+          format: date-time
+        capabilities:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+        rx_seq:
+          type: [integer, 'null']
+          minimum: 0
+        tx_seq:
+          type: integer
+          minimum: -1
+        active_control_lease:
+          type: [string, 'null']
+        seen_event_ids:
+          type: array
+          items:
+            type: string
+        host_hello_sent:
+          type: boolean
+
+    CommandRecord:
+      title: CommandRecord
+      type: object
+      additionalProperties: false
+      required:
+        - command_id
+        - device_id
+        - session_id
+        - source
+        - type
+        - wire_type
+        - payload
+        - priority
+        - issued_at
+        - expires_at
+        - issued_at_ms
+        - expires_at_ms
+        - correlation_id
+        - idempotency_key
+        - state
+        - result
+        - error
+        - late_evidence
+      description: Server-owned lifecycle record; it is not a request envelope and must not be replayed to a device.
+      properties:
+        command_id:
+          type: string
+          minLength: 1
+          maxLength: 96
+        device_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        session_id:
+          type: [string, 'null']
+          maxLength: 96
+        source:
+          type: string
+          enum: [web, manual, batch, agent, maintenance, system]
+        type:
+          type: string
+          minLength: 1
+          maxLength: 64
+        wire_type:
+          type: string
+          maxLength: 64
+          description: Server-side mapper result for diagnostics; never accepted as a browser request field.
+        payload:
+          type: object
+          description: Server-generated mapped payload; not a complete lifeos.v1 envelope.
+        priority:
+          type: integer
+          minimum: 0
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        issued_at_ms:
+          type: integer
+          minimum: 0
+        expires_at_ms:
+          type: integer
+          minimum: 0
+        correlation_id:
+          type: string
+          minLength: 1
+          maxLength: 96
+        idempotency_key:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 96
+        state:
+          type: string
+          enum:
+            - created
+            - validated
+            - routed
+            - sent
+            - accepted
+            - executing
+            - completed
+            - rejected
+            - preempted
+            - safety_blocked
+            - offline
+            - timeout
+            - expired
+            - cancelled
+        result:
+          type: [object, 'null']
+        error:
+          oneOf:
+            - $ref: '#/components/schemas/CommandError'
+            - type: 'null'
+        late_evidence:
+          type: array
+          items:
+            type: object
+
+    CommandError:
+      title: CommandError
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          type: string
+          enum:
+            - validation_error
+            - capability_unavailable
+            - offline
+            - timeout
+            - expired
+            - safety_blocked
+            - fault_latched
+            - internal
+            - busy
+            - rate_limited
+            - rejected
+            - preempted
+        reason:
+          type: string
+        required_capability:
+          type: string
+          enum:
+            - status
+            - control
+            - motion
+            - safety
+            - manual_control_v1
+            - behavior
+            - speech
+
+    ErrorResponse:
+      title: ErrorResponse
+      type: object
+      additionalProperties: false
+      required: [detail]
+      properties:
+        detail:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                $ref: '#/components/schemas/ValidationIssue'
+
+    ValidationIssue:
+      title: ValidationIssue
+      type: object
+      additionalProperties: false
+      required: [loc, msg, type]
+      properties:
+        loc:
+          type: array
+          items:
+            oneOf:
+              - type: string
+              - type: integer
+        msg:
+          type: string
+        type:
+          type: string
+        input: {}
+        ctx:
+          type: object
+        url:
+          type: string
+
+    MaintenancePrepareRequest:
+      type: object
+      additionalProperties: false
+      required: [operation]
+      properties:
+        operation: { type: string, minLength: 1, maxLength: 64 }
+        ttl_ms: { type: integer, minimum: 1, maximum: 300000, default: 60000 }
+    MaintenanceTask:
+      type: object
+      additionalProperties: false
+      required: [task_id, device_id, operation, session_id, challenge_id, state, consequence]
+      properties:
+        task_id: { type: string }
+        device_id: { type: string }
+        operation: { type: string }
+        session_id: { type: string }
+        challenge_id: { type: string }
+        state: { type: string, enum: [pending, awaiting_confirmation, confirmed, executing, completed, rejected, expired, cancelled] }
+        consequence: { type: string }
+        error: { type: object, additionalProperties: true }
+    DiagnosticBundle:
+      type: object
+      additionalProperties: false
+      required: [bundle_id, generated_at, content, integrity_sha256]
+      properties:
+        bundle_id: { type: string }
+        generated_at: { type: string, format: date-time }
+        content: { type: object, additionalProperties: false }
+        integrity_sha256: { type: string, pattern: '^[a-f0-9]{64}$' }
+    RolloutRequest:
+      type: object
+      additionalProperties: false
+      required: [image_ref]
+      properties:
+        image_ref: { type: string, minLength: 1, maxLength: 256 }
+    RolloutPreflightRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        checks: { type: object, additionalProperties: { type: boolean } }
+    RolloutTask:
+      type: object
+      additionalProperties: false
+      required: [task_id, device_id, image_ref, state, consequence, preconditions]
+      properties:
+        task_id: { type: string }
+        device_id: { type: string }
+        image_ref: { type: string }
+        state: { type: string, enum: [pending, preflight, ready, running, completed, rejected, failed, expired, cancelled] }
+        consequence: { type: string }
+        preconditions: { type: object, additionalProperties: { type: boolean } }
+        error: { type: object, additionalProperties: true }

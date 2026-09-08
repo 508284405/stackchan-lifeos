@@ -3,7 +3,7 @@ import asyncio
 from brain.arbitration import arbitrate
 from brain.flow import run_cognitive_cycle
 from brain.models import BehaviorIntent, LifeEvent, LifeState
-from brain.provider import CodexAppServerProvider
+from brain.legacy_codex import CodexAppServerProvider
 from brain.api import create_app
 from fastapi.testclient import TestClient
 
@@ -64,3 +64,16 @@ def test_http_event_response_is_json_serializable():
         response = client.post("/events", json={"kind": "user", "text": "hello"})
     assert response.status_code == 200
     assert response.json()["intent"]["name"] == "greet"
+
+
+def test_api_can_rehydrate_a_file_checkpoint(tmp_path):
+    checkpoint_path = str(tmp_path / "brain-checkpoints.json")
+    with TestClient(create_app(checkpoint_path=checkpoint_path, thread_id="api-thread")) as client:
+        response = client.post("/events", json={"kind": "user", "text": "hello", "id": "api-event-1"})
+        assert response.status_code == 200
+    with TestClient(create_app(checkpoint_path=checkpoint_path, thread_id="api-thread")) as client:
+        health = client.get("/health")
+        assert health.status_code == 200
+        response = client.post("/events", json={"kind": "system", "id": "api-event-2", "priority": 20})
+        assert response.status_code == 200
+        assert response.json()["state"]["interaction_count"] == 1

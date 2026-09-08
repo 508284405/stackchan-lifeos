@@ -1,0 +1,14 @@
+{
+  "codex_version": "codex-cli 0.147.0",
+  "generator": "codex app-server generate-json-schema",
+  "required_methods": [
+    "initialize",
+    "thread/start",
+    "turn/start",
+    "turn/interrupt"
+  ],
+  "files": {
+    "ClientRequest.json": "6ba8920b1eb51583d43829d73a353bb069a888d08ed763a44272440c14efc88f",
+    "JSONRPCRequest.json": "31bd6f360b2dd8a7ceaf682708105d40d38cb0b9d0821357a04da67028438f73"
+  }
+}

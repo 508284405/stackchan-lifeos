@@ -1,0 +1,7 @@
+{
+  "id": "resp_invalid_1",
+  "model": "test-model",
+  "intents": [
+    {"name": "unknown_behavior", "reason": "bad", "priority": 90}
+  ]
+}

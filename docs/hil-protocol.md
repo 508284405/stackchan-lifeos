@@ -1,9 +1,16 @@
-# USB CDC HIL protocol runner
+# USB CDC HIL protocol runners
 
-`tools/hil_usb_runner.py` is a deliberately narrow, read-only smoke runner for
-Phase 1. It defaults to dry-run and does not open a serial device unless
-`--port` is explicitly supplied. It has no flash, reset, motion, media, or
-emergency-stop operation.
+`tools/hil_usb_runner.py` is the deliberately narrow, read-only smoke runner for
+the earlier motion-disabled image. It defaults to dry-run and does not open a
+serial device unless `--port` is explicitly supplied. It has no flash, reset,
+motion, media, or emergency-stop operation.
+
+The complete real-HAL matrix is `tools/phase1_hil.py`. It is separately gated by
+`--allow-hardware`, requires the HIL image's maintainer authorization fields,
+and is the only runner that exercises supervised motion, emergency stop,
+feedback-freeze injection, supervised mechanical-load stall, and the optional
+read-only soak. The mechanical-load check is opt-in and requires an operator
+to apply only gentle resistance and release it after torque is cut.
 
 ```sh
 python3 tools/hil_usb_runner.py
@@ -17,10 +24,13 @@ peripheral interprets as `rst:0x15 (USB_UART_CHIP_RESET)`, so traffic sent
 immediately after open is consumed by a reboot. The idempotent `hello.host`
 envelope (fixed `event_id`, `seq`) is then sent and retried once with identical
 content; afterwards the read-only `command.control`/`status` command is sent.
-The runner accepts only valid `lifeos.v1` JSONL responses. Success requires
-both a hello response (marker `lifeos-phase1-hil-*`, `motion_enabled` false)
-and an ACK/error response. If no response confirms a running StackChan protocol
-firmware, the runner exits with `blocked` status and makes no further attempt.
+The runner accepts only valid `lifeos.v1` JSONL responses. Success requires a
+`hello.device` identifying `StackChan/CoreS3`, a `lifeos-phase1-*` firmware and
+the `lifeos.v1` protocol, followed by a completed read-only status ACK with
+`torque_enabled=false` and `fault=false`. `motion_enabled` may be true on the
+current HIL firmware; this smoke check does not enable motion and is not an
+actuator HIL pass. If no response confirms the identity and safe idle state, the
+runner exits with `blocked` status and makes no further attempt.
 
 The status probe intentionally omits command TTL fields because the USB host and
 device monotonic clocks are not synchronized before the hello exchange. TTL is
@@ -39,8 +49,13 @@ Hellos with a mismatched device_id or an unknown type are rejected without
 resetting the session. Actuating commands still owe an explicit
 clock-offset/TTL session policy before they are enabled.
 
-Before using a real port, verify the USB identity and firmware out of band.
-The runner cannot prove the target's hardware identity from a generic serial
-path alone. Verified 2026-08-29 against the LifeOS HIL image on ESP32-S3 rev 0.2
-(MAC `1c:db:d4:ba:43:40`): hello + completed status ACK, and rejection of
-duplicate commands, sequence gaps, expired TTL and unknown actions.
+Before using either runner on a real port, verify the USB identity and firmware
+out of band. The runner cannot prove the target's hardware identity from a
+generic serial path alone. A read-only smoke was verified 2026-08-30 on
+`/dev/cu.usbmodem1101`: Espressif USB serial `1C:DB:D4:BA:43:40`,
+ESP32-S3/StackChan CoreS3, MAC `1c:db:d4:ba:43:40`, firmware
+`lifeos-phase1-0.3.0`, and `lifeos.v1` hello/status all passed with torque off and
+fault false. This is direct protocol evidence only; it does not constitute the
+Web Bridge adapter/API E2E or real-HAL actuator HIL. The full actuator matrix
+remains separately gated by `tools/phase1_hil.py` and its touch, emergency,
+mechanical-stall, and soak requirements.

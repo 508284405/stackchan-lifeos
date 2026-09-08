@@ -1,0 +1,21 @@
+{
+  "schema": "lifeos.control-plane.identity.v1",
+  "contract_version": "1.0.0",
+  "entity_type": "edge_agent",
+  "entity_id": "edge-a",
+  "site_id": "site-a",
+  "display_name": "Site A Edge",
+  "parent_site_id": "site-a",
+  "identity_epoch": 3,
+  "trust_state": "active",
+  "auth": {
+    "transport": "mtls",
+    "pairing_id": "pair-edge-a-01",
+    "credential_state": "active",
+    "certificate_fingerprint_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "certificate_san_uri": "spiffe://stackchan/site/site-a/edge/edge-a",
+    "not_before_ms": 1699999000000,
+    "not_after_ms": 1702591000000,
+    "rotation_id": "rotation-edge-a-03"
+  }
+}

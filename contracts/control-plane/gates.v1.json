@@ -1,0 +1,12 @@
+{
+  "schema": "lifeos.control-plane.gates.v1",
+  "contract_version": "1.0.0",
+  "status": "design_only",
+  "web_authentication_required": true,
+  "gates": {
+    "public_network_ingress": false,
+    "remote_motion": false,
+    "destructive_operations": false,
+    "ota": false
+  }
+}

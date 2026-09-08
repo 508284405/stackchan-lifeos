@@ -1,0 +1,28 @@
+{
+  "schema": "lifeos.control-plane.v1",
+  "contract_version": "1.0.0",
+  "kind": "heartbeat",
+  "message_type": "edge.heartbeat",
+  "message_id": "msg-wrong-sender-01",
+  "sender": {
+    "entity_type": "edge_agent",
+    "entity_id": "edge-a",
+    "site_id": "site-a",
+    "certificate_fingerprint_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "recipient": {
+    "entity_type": "control_plane",
+    "entity_id": "control-plane",
+    "site_id": "control"
+  },
+  "issued_at_ms": 1700000000000,
+  "expires_at_ms": 1700000030000,
+  "seq": 8,
+  "session": {
+    "session_id": "cp-session-edge-a-01",
+    "session_nonce": "TEST_ONLY_nonce_edge_a_0000001",
+    "direction": "edge_to_control",
+    "epoch": 1
+  },
+  "payload": {"heartbeat": "ok"}
+}

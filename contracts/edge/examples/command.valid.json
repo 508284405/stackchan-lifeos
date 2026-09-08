@@ -1,0 +1,1 @@
+{"schema":"lifeos.edge.v1","kind":"command","type":"command.action","message_id":"m-2","command_id":"cmd-1","sender":{"kind":"control_plane","id":"bridge-1"},"edge_id":"edge-a","device_id":"stackchan-01","session_id":"edge-session-1","seq":0,"ts_ms":1000,"expires_at_ms":2500,"payload":{"action":"home","params":{"reason":"test"}}}

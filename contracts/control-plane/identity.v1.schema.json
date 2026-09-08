@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stackchan.local/schemas/control-plane/v1/identity.json",
+  "title": "StackChan LifeOS Site and Edge Identity v1",
+  "description": "Registry identity and credential metadata. Private keys and pairing secrets are never represented here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "contract_version", "entity_type", "entity_id", "site_id", "identity_epoch", "trust_state", "auth"],
+  "properties": {
+    "schema": {"const": "lifeos.control-plane.identity.v1"},
+    "contract_version": {"const": "1.0.0"},
+    "entity_type": {"enum": ["site", "edge_agent", "device"]},
+    "entity_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "site_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "display_name": {"type": "string", "minLength": 1, "maxLength": 96},
+    "parent_site_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "hardware_id_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "identity_epoch": {"type": "integer", "minimum": 0, "maximum": 2147483647},
+    "trust_state": {"enum": ["pending_pairing", "paired", "active", "revoked", "expired"]},
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport", "pairing_id", "credential_state"],
+      "properties": {
+        "transport": {"enum": ["mtls", "local_pairing"]},
+        "pairing_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$"},
+        "credential_state": {"enum": ["staged", "active", "revoked", "expired"]},
+        "certificate_fingerprint_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "certificate_san_uri": {"type": "string", "pattern": "^spiffe://stackchan/site/[a-z][a-z0-9-]{0,63}/edge/[a-z][a-z0-9-]{0,63}$"},
+        "not_before_ms": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+        "not_after_ms": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+        "rotation_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$"}
+      }
+    }
+  }
+}

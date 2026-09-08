@@ -13,6 +13,7 @@ namespace lifeos::phase1 {
 enum class ControlAction : std::uint8_t {
   Pause,
   Resume,
+  Preflight,
   Home,
   ClearFault,
   EmergencyStop,
@@ -61,6 +62,12 @@ class Controller final {
   protocol::Gateway gateway_;
   runtime::MotionRequest pending_motion_{};
   bool last_present_{false};
+  bool touch_clear_hold_{false};
+  hal::ServoPosition last_feedback_{};
+  std::uint64_t last_feedback_progress_ms_{0};
+  bool have_feedback_{false};
+  bool stall_motion_active_{false};
+  bool stall_monitoring_started_{false};
 };
 
 }  // namespace lifeos::phase1

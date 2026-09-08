@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stackchan.local/schemas/lifeos.edge.v1/envelope.json",
+  "title": "LifeOS Edge v1 Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "type", "message_id", "sender", "edge_id", "device_id", "session_id", "seq", "ts_ms", "payload"],
+  "properties": {
+    "schema": {"const": "lifeos.edge.v1"},
+    "kind": {"enum": ["hello", "heartbeat", "command", "ack", "event", "error"]},
+    "type": {"type": "string", "pattern": "^[a-z][a-z0-9_]*(\\.[a-z0-9_]+)+$", "maxLength": 64},
+    "message_id": {"type": "string", "minLength": 1, "maxLength": 96},
+    "command_id": {"type": "string", "minLength": 1, "maxLength": 96},
+    "sender": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {"kind": {"enum": ["control_plane", "edge"]}, "id": {"type": "string", "minLength": 1, "maxLength": 64}}
+    },
+    "edge_id": {"type": "string", "minLength": 1, "maxLength": 64},
+    "device_id": {"type": "string", "minLength": 1, "maxLength": 64},
+    "session_id": {"type": "string", "minLength": 1, "maxLength": 96},
+    "seq": {"type": "integer", "minimum": 0},
+    "ack_seq": {"type": "integer", "minimum": 0},
+    "ts_ms": {"type": "integer", "minimum": 0},
+    "expires_at_ms": {"type": "integer", "minimum": 0},
+    "nonce": {"type": "string", "minLength": 16, "maxLength": 128},
+    "payload": {"type": "object"}
+  }
+}

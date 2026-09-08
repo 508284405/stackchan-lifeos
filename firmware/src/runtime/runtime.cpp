@@ -1,6 +1,7 @@
 #include "lifeos/runtime/runtime.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace lifeos::runtime {
 
@@ -75,6 +76,8 @@ SafetyDecision FastSafetyLoop::tick(const SafetySample& sample,
   if (!request.valid || request.expires_at_ms <= sample.now_ms) {
     faults |= request.valid ? SafetyFault::CommandExpired
                             : SafetyFault::InvalidCommand;
+  } else if (!std::isfinite(request.yaw_deg) || !std::isfinite(request.pitch_deg)) {
+    faults |= SafetyFault::InvalidCommand;
   } else if (request.yaw_deg < kYawHardMin || request.yaw_deg > kYawHardMax ||
              request.pitch_deg < kPitchMin || request.pitch_deg > kPitchMax) {
     faults |= SafetyFault::HardLimit;

@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/Users/wangyu/product/stackchan-lifeos/tools/phase1_hil.py", line 485, in <module>
+    raise SystemExit(main())
+  File "/Users/wangyu/product/stackchan-lifeos/tools/phase1_hil.py", line 475, in main
+    print(json.dumps(run_acceptance(args.port, args.grace, args.soak_seconds,
+  File "/Users/wangyu/product/stackchan-lifeos/tools/phase1_hil.py", line 350, in run_acceptance
+    settled_transient = wait_for_predicate(run, settled(run, 10.0, 50.0), timeout=6.0)
+UnboundLocalError: local variable 'settled' referenced before assignment

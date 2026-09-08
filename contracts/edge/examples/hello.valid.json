@@ -1,0 +1,1 @@
+{"schema":"lifeos.edge.v1","kind":"hello","type":"hello.edge","message_id":"m-1","sender":{"kind":"edge","id":"edge-a"},"edge_id":"edge-a","device_id":"stackchan-01","session_id":"edge-session-1","seq":0,"ts_ms":1000,"nonce":"0123456789abcdef","payload":{"protocol":"lifeos.edge.v1"}}

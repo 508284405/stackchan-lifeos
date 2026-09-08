@@ -3,7 +3,7 @@
 状态：Draft  
 版本：`lifeos.v1`
 
-本协议是 LifeOS 自有的设备—主机协议，不是 Codex app-server 协议，也不是 CGraph API。它面向低带宽、有序但可能断线的 USB CDC/串行链路；未来局域网传输必须复用相同 envelope 和安全规则。
+本协议是 LifeOS 自有的设备—主机协议，不是 sub2api/OpenAI provider API，也不是 CGraph API。它面向低带宽、有序但可能断线的 USB CDC/串行链路；未来局域网传输必须复用相同 envelope 和安全规则。
 
 Phase 1 的机器可读事实源为 `contracts/phase1/envelope.schema.json`；根目录其他 schema 属于主机领域/Phase 2 草案，不能直接作为设备 wire message。
 
@@ -43,7 +43,10 @@ Phase 1 的机器可读事实源为 `contracts/phase1/envelope.schema.json`；�
 
 ## 2. Hello 与能力协商
 
-设备连接后先发 `hello.device`，主机返回 `hello.host`。在协商完成前只允许 hello、配对和错误消息。
+设备连接后必须先完成 `hello` 协商，在协商完成前只允许 hello、配对和错误消息。
+当前 ESP-IDF StackChan 固件采用主机先发 `hello.host`、设备返回 `hello.device` 的
+顺序；Bridge 同时兼容传输层先发 `hello.device` 的旧/模拟顺序。无论顺序如何，数据和
+普通命令都必须等到设备身份、`lifeos.v1` 和 capability 交集验证完成后才可发送。
 
 ```json
 {
@@ -85,10 +88,17 @@ Phase 1 的机器可读事实源为 `contracts/phase1/envelope.schema.json`；�
 
 | 类型 | payload 核心字段 |
 | --- | --- |
+| `host.heartbeat` | `media_enabled` |
 | `agent.status` | `run_id`, `phase`, `message?` |
 | `agent.intent` | `run_id`, `intent_plan` |
 | `approval.requested` | `approval_id`, `risk`, `summary`, `expires_at` |
 | `approval.resolved` | `approval_id`, `decision`, `actor` |
+
+`host.heartbeat` 只用于刷新设备侧 1.5 s 主机失联看门狗；它不产生 ACK，也不携带动作或媒体数据。
+在线 session 由 Bridge 统一以固定间隔（最多 500 ms）发送；显式 camera preview 期间继续发送，
+`media_enabled` 必须与当前 Bridge media gate 一致。session 断开后停止。其 payload 由
+[`contracts/phase1/host-heartbeat-v1.schema.json`](../contracts/phase1/host-heartbeat-v1.schema.json)
+约束。
 
 Agent 的自然语言、reasoning、主机路径和工具原始输出不能直接下发设备；只能转成 `intent_plan`。
 
@@ -110,7 +120,9 @@ Agent 的自然语言、reasoning、主机路径和工具原始输出不能直�
 }
 ```
 
-`action` 仅允许 `pause`、`resume`、`home`、`status`、`clear_fault`。`emergency_stop` 是独立命令，设备必须在本地立即执行，不等待 ACK。
+`action` 仅允许 `pause`、`resume`、`preflight`、`home`、`status`、`clear_fault`。`preflight` 需要设备
+声明 `manual_preflight_v1`，只执行 VM 上电、两次位置反馈确认和 torque-off，不生成目标或运动；
+`emergency_stop` 是独立命令，设备必须在本地立即执行，不等待 ACK。
 
 ### 4.2 IntentPlan
 
@@ -140,6 +152,39 @@ Agent 的自然语言、reasoning、主机路径和工具原始输出不能直�
 ### 4.3 运动命令
 
 Agent 不直接发送运动命令。仅由本地行为库将 `look_at_target` 等行为解析为设备内部动作；内部动作同样经过 `SafetyGate`。协议层如需调试运动，只允许维护权限下的绝对角度、软限位和最大步长字段，并默认关闭。
+
+### 4.4 `manual_control_v1`（已实现，真实 USB 入口固定启用）
+
+归一化 dead-man 输入扩展见 [`docs/rfc/0002-manual-control-v1.md`](rfc/0002-manual-control-v1.md)
+和 [`contracts/phase1/manual-control-v1.schema.json`](../contracts/phase1/manual-control-v1.schema.json)。
+目标固件已包含独立 parser/state machine，production 实机已声明该 capability，且
+production/HIL target build 通过。 `tools/web_bridge_real_server.py` 是唯一的生产 USB
+入口，固定以该 gate 和 verified transport 启动，并要求真实 `hello.device` 声明该能力；
+设备未声明时启动失败。generic/fake Bridge 的测试 gate 不代表生产能力。连续控制仍受
+session/lease、dead-man TTL、失焦/断链释放、健康状态和设备 SafetyGate 约束。
+
+### 4.5 `camera_preview`（连续 MJPEG 视频）
+
+Web Bridge 的摄像头预览使用高层 `camera.preview.start/stop` API。Bridge 只向设备映射
+固定配置的 `command.camera_preview`：
+
+```json
+{
+  "action": "start",
+  "fps": 10,
+  "duration_ms": 0
+}
+```
+
+设备要求 host hello 明确携带 `media_enabled=true`，并在自己的 GC0308 摄像头可用时持续发送
+`event.camera.frame.begin/chunk/end`。`fps=10` 是当前 USB/ESP32-S3 实现的服务端上限；
+`duration_ms=0` 表示持续到显式 stop、session 断开或设备 host watchdog 触发。JPEG 分块的
+decoded data 每块最多 5 KiB，且必须满足 `lifeos.v1` 的 16 KiB line / 8 KiB payload 限制。
+Bridge 在完整校验后只保留每台设备的最新帧；帧不进入 SQLite、audit、LangGraph 或 provider。
+
+该隧道是本地 USB 单设备连续 MJPEG 实现，但不是通用视频协议；当前目标为实测约 10 fps。
+Wi-Fi/4G、H.264/WebRTC/HLS、双向音视频和录像需要独立 media transport/RFC；不得通过浏览器
+提交分辨率、JPEG quality、chunk 或任意二进制 payload。
 
 ## 5. ACK、错误与重试
 
@@ -175,5 +220,5 @@ Agent 不直接发送运动命令。仅由本地行为库将 `look_at_target` �
 
 ## 8. 参考资料
 
-- [OpenAI Codex app-server 协议说明](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)（仅用于主机 Adapter，非设备协议）
+- [sub2api](https://github.com/Wei-Shaw/sub2api)（仅用于主机推理 Provider，非设备协议）
 - [LangGraph 流式事件](https://docs.langchain.com/oss/python/langgraph/streaming)

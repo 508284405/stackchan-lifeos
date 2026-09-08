@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stackchan.local/schemas/lifeos.v1/host-heartbeat-v1.json",
+  "title": "LifeOS host heartbeat v1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["media_enabled"],
+  "properties": {
+    "media_enabled": {"type": "boolean"}
+  }
+}

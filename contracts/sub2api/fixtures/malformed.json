@@ -1,0 +1,1 @@
+{"id":"resp_malformed_1","output":[{"type":"message","content":[{"type":"output_json","json":{"intents":"not-a-list"}}]}]}

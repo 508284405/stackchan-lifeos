@@ -1,0 +1,40 @@
+{
+  "schema": "lifeos.control-plane.v1",
+  "contract_version": "1.0.0",
+  "kind": "event",
+  "message_type": "edge.device_event",
+  "message_id": "msg-edge-a-0007",
+  "correlation_id": "corr-health-01",
+  "sender": {
+    "entity_type": "edge_agent",
+    "entity_id": "edge-a",
+    "site_id": "site-a",
+    "certificate_fingerprint_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "recipient": {
+    "entity_type": "control_plane",
+    "entity_id": "control-plane",
+    "site_id": "control"
+  },
+  "issued_at_ms": 1700000000000,
+  "expires_at_ms": 1700000030000,
+  "seq": 7,
+  "session": {
+    "session_id": "cp-session-edge-a-01",
+    "session_nonce": "TEST_ONLY_nonce_edge_a_0000001",
+    "direction": "edge_to_control",
+    "epoch": 1
+  },
+  "device_session": {
+    "device_id": "device-01",
+    "edge_id": "edge-a",
+    "device_session_id": "device-session-01",
+    "device_nonce_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "device_rx_seq": 11,
+    "device_tx_seq": 4
+  },
+  "payload": {
+    "event": "health.report",
+    "summary_bytes": 512
+  }
+}

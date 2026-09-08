@@ -1,0 +1,22 @@
+{
+  "id": "resp_success_1",
+  "model": "test-model",
+  "output": [
+    {
+      "type": "message",
+      "content": [
+        {
+          "type": "output_json",
+          "json": {
+            "intents": [
+              {"name": "greet", "reason": "user hello", "priority": 60, "intensity": 0.6}
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "intents": [
+    {"name": "greet", "reason": "user hello", "priority": 60, "intensity": 0.6}
+  ]
+}

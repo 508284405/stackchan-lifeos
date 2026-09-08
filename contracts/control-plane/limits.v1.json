@@ -1,0 +1,29 @@
+{
+  "schema": "lifeos.control-plane.limits.v1",
+  "contract_version": "1.0.0",
+  "wire": {
+    "max_message_bytes": 16384,
+    "max_payload_bytes": 8192,
+    "max_message_age_ms": 120000
+  },
+  "session": {
+    "heartbeat_interval_ms": 15000,
+    "heartbeat_timeout_ms": 45000,
+    "max_clock_skew_ms": 30000,
+    "replay_retention_ms": 86400000
+  },
+  "traffic": {
+    "steady_bytes_per_edge_per_minute": 262144,
+    "burst_bytes_per_edge": 65536,
+    "telemetry_bytes_per_edge_per_minute": 131072,
+    "control_bytes_per_edge_per_minute": 65536,
+    "ota_bytes_per_rollout": 0
+  },
+  "autonomy": {
+    "on_control_disconnect": "reject_new_remote_commands",
+    "allow_local_safety": true,
+    "allow_local_behaviors": true,
+    "queue_remote_motion": false,
+    "queue_ota": false
+  }
+}

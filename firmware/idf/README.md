@@ -1,26 +1,37 @@
 # ESP-IDF target shell
 
-This is the target-build shell for ESP32-S3. It compiles the same fixed-capacity
-runtime, behavior and protocol sources used by host tests. It deliberately does
-not enable motion: the M5Stack StackChan BSP/HAL adapter, feedback calibration and
-local self-test are still hardware-gated.
+This is the ESP32-S3 target firmware for StackChan/CoreS3. It compiles the same
+fixed-capacity runtime, behavior and protocol sources used by host tests and
+adds a small ESP-IDF HAL for the real board. Production builds keep the
+maintainer-only HIL commands disabled; the HIL profile enables them only for a
+physically supervised acceptance run.
 
 Required toolchain: ESP-IDF 5.5.4 with its supported CMake and Ninja versions.
 
 ```bash
-source "$IDF_PATH/export.sh"
-idf.py -C firmware/idf set-target esp32s3
-idf.py -C firmware/idf build
-idf.py -C firmware/idf size-components
+IDF_PATH=/path/to/esp-idf-5.5.4 \
+  tools/build_target.sh production build size-components
+
+# Only for a supervised hardware acceptance run.
+IDF_PATH=/path/to/esp-idf-5.5.4 \
+  tools/build_target.sh hil build
 ```
 
-The target has been compiled with ESP-IDF v5.5.4 and the ESP32-S3 toolchain,
-flashed onto the real board (2026-08-29, after a full-flash backup), exercised
-over USB Serial/JTAG with the read-only HIL runner, and the board was then
-restored to its prior firmware. The image keeps motion disabled and speaks the
-LifeOS protocol over USB Serial JTAG.
+`tools/build_target.sh` isolates each profile's generated `sdkconfig` inside its
+ignored build directory and passes the pinned `sdkconfig.defaults` explicitly;
+this prevents a previous HIL configuration from silently becoming a production
+image. The build also pins `espressif/esp32-camera` 2.1.5 in
+`firmware/idf/dependencies.lock`.
 
-Target-specific notes baked into `main/app_main.cpp` and `sdkconfig.defaults`:
+The target has been compiled with ESP-IDF v5.5.4 and the ESP32-S3 toolchain.
+The real-HAL HIL image has been flashed and boots stably on the target. Its
+board bring-up confirms PSRAM, camera, touch, IMU, proximity, display, AW9523
+and PY32, but both SCS servos currently return no ping/feedback, so the image
+holds `motion=disabled`. Do not claim actuator acceptance until the physical
+servo path is restored and `tools/phase1_hil.py --allow-hardware` completes.
+
+Target-specific notes baked into `main/app_main.cpp`,
+`components/stackchan_hal/`, and `sdkconfig.defaults`:
 
 - stdin must not be read through stdio: the startup console VFS reads
   USB-Serial/JTAG non-blocking (immediate EOF) and the newlib stdin lock trips
@@ -30,3 +41,9 @@ Target-specific notes baked into `main/app_main.cpp` and `sdkconfig.defaults`:
   payload buffers across parse/ack temporaries and was measured peaking at
   ~44 KiB on hardware. Smaller stacks panic with a stack overflow as soon as
   the first request arrives.
+- `LIFEOS_HIL_TEST_MODE` is absent from the production defaults. Its only
+  enabled commands are maintainer-authorized motion and feedback-freeze probes,
+  and its configuration is isolated in `sdkconfig.hil.defaults`.
+- The board adapter keeps the 20 Hz safety task independent from the 10 Hz
+  sensor/display graph. Servo power is gated by PY32 `VM_EN`, startup torque is
+  off, and every failure path cuts `VM_EN` before reporting the fault.

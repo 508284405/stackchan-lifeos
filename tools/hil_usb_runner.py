@@ -22,12 +22,15 @@ BANNER = b"LIFEOS_HIL_READY"
 
 
 def envelope(kind: str, typ: str, event_id: str, seq: int, payload: dict,
-             device_id: str | None = "stackchan-01") -> bytes:
+             device_id: str | None = "stackchan-01",
+             correlation_id: str | None = None) -> bytes:
     value = {"schema": SCHEMA, "kind": kind, "type": typ,
-             "event_id": event_id, "seq": seq, "ts_ms": int(time.time() * 1000),
-             "payload": payload}
+             "event_id": event_id}
+    if correlation_id is not None:
+        value["correlation_id"] = correlation_id
     if device_id is not None:
         value["device_id"] = device_id
+    value.update({"seq": seq, "ts_ms": int(time.time() * 1000), "payload": payload})
     return (json.dumps(value, separators=(",", ":"), allow_nan=False) + "\n").encode()
 
 
@@ -93,36 +96,81 @@ def run(port: str, timeout: float) -> int:
                     if value is not None:
                         responses.append(value)
 
-        # Opening a USB CDC port asserts DTR, which resets the ESP32-S3
-        # USB Serial/JTAG peripheral (rst:0x15). Drain the boot banner first so
-        # the handshake is not swallowed by the reboot; when the target was
-        # already running this is just a grace window.
-        pump(max(timeout, 3.0), stop_on_banner=True)
+        # Opening a USB CDC port may assert DTR and reset the ESP32-S3
+        # USB Serial/JTAG peripheral. Always drain the complete grace window;
+        # returning as soon as the banner appears can race the app main loop
+        # and let a status frame reach the gateway before hello is installed.
+        pump(max(timeout, 3.0), stop_on_banner=False)
 
         # Only handshake and status are sent. Both are non-actuating/read-only.
         # The first hello can be consumed by the reset above, so the idempotent
-        # envelope is retried once with unchanged event_id and seq.
+        # envelope is retried once with unchanged event_id and seq. Host
+        # sequences start at one, matching SessionManager and the wire examples.
+        run_token = time.monotonic_ns()
+        hello_event_id = f"hil-hello-{run_token}"
+        status_event_id = f"hil-status-{run_token}"
+        session_nonce = f"hil-readonly-{run_token}"
+        responses.clear()
+        hello_response = None
         for _ in range(2):
-            os.write(fd, envelope("hello", "hello.host", "hil-hello-1", 1,
-                                  {"protocol_versions": [SCHEMA], "session_nonce": "hil-readonly",
-                                   "capabilities": ["status"], "raw_media": False}))
+            os.write(fd, envelope("hello", "hello.host", hello_event_id, 1,
+                                  {"protocol_versions": [SCHEMA], "session_nonce": session_nonce,
+                                   "capabilities": ["status"], "media_enabled": False}))
             pump(timeout)
-            if any(item["kind"] == "hello" for item in responses):
+            hello_response = next(
+                (
+                    item
+                    for item in responses
+                    if item.get("kind") == "hello"
+                    and item.get("type") == "hello.device"
+                    and item.get("correlation_id") == hello_event_id
+                ),
+                None,
+            )
+            if hello_response is not None:
                 break
-        if any(item["kind"] == "hello" for item in responses):
+        if hello_response is not None:
             os.write(fd, envelope(
-                "command", "command.control", "hil-status-1", 2,
-                {"action": "status"}))
+                "command", "command.control", status_event_id, 2,
+                {"action": "status"}, correlation_id=status_event_id))
             pump(timeout)
-        hello_ok = any(
-            item["kind"] == "hello"
-            and item.get("payload", {}).get("firmware", "").startswith("lifeos-phase1-hil-")
-            and item.get("payload", {}).get("motion_enabled") is False
-            for item in responses
+        hello_payload = hello_response.get("payload", {}) if hello_response else {}
+        hello_ok = (
+            hello_response is not None
+            and hello_payload.get("firmware", "").startswith("lifeos-phase1-")
+            and hello_payload.get("board") == "StackChan/CoreS3"
+            and SCHEMA in hello_payload.get("protocol_versions", [])
+            and isinstance(hello_payload.get("motion_enabled"), bool)
+            and hello_payload.get("device_id", hello_response.get("device_id")) == "stackchan-01"
         )
-        ok = hello_ok and any(item["kind"] in {"ack", "error"} for item in responses)
+        status_response = next(
+            (
+                item
+                for item in responses
+                if item.get("kind") == "ack"
+                and item.get("type") == "ack.command"
+                and item.get("correlation_id") == status_event_id
+            ),
+            None,
+        )
+        status_payload = status_response.get("payload", {}) if status_response else {}
+        status_ok = (
+            status_response is not None
+            and status_payload.get("status") == "completed"
+            and status_payload.get("torque_enabled") is False
+            and status_payload.get("fault") is False
+        )
+        ok = hello_ok and status_ok
         print(json.dumps({"mode": "hil", "port": port, "responses": responses,
                           "blocked": not ok,
+                          "identity": {
+                              "device_id": hello_response.get("device_id") if hello_response else None,
+                              "board": hello_payload.get("board"),
+                              "mac": hello_payload.get("mac"),
+                              "firmware": hello_payload.get("firmware"),
+                              "protocol": SCHEMA,
+                          },
+                          "safe_idle": status_ok,
                           "reason": None if ok else "no confirmed lifeos.v1 hello/status response"}))
         return 0 if ok else 2
     finally:

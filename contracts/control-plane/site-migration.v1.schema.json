@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stackchan.local/schemas/control-plane/v1/site-migration.json",
+  "title": "StackChan LifeOS Site Migration v1",
+  "description": "Two-phase site/Edge migration payload. It does not move an active device session or replay commands.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "contract_version", "migration_id", "phase", "source_site_id", "target_site_id", "source_edge_id", "target_edge_id", "device_ids", "migration_epoch", "issued_at_ms", "expires_at_ms", "requires_local_confirmation"],
+  "properties": {
+    "schema": {"const": "lifeos.control-plane.site-migration.v1"},
+    "contract_version": {"const": "1.0.0"},
+    "migration_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$"},
+    "phase": {"enum": ["prepare", "commit", "abort"]},
+    "source_site_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "target_site_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "source_edge_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "target_edge_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+    "device_ids": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 200,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"}
+    },
+    "migration_epoch": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+    "issued_at_ms": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "expires_at_ms": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "requires_local_confirmation": {"const": true},
+    "reason": {"type": "string", "maxLength": 256}
+  }
+}

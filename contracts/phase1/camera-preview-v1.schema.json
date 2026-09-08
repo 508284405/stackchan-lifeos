@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stackchan.local/schemas/lifeos.v1/camera-preview-v1.json",
+  "title": "LifeOS camera preview v1 payloads",
+  "type": "object",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/command"
+    },
+    {
+      "$ref": "#/$defs/frame_begin"
+    },
+    {
+      "$ref": "#/$defs/frame_chunk"
+    },
+    {
+      "$ref": "#/$defs/frame_end"
+    }
+  ],
+  "$defs": {
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action"],
+      "properties": {
+        "action": {
+          "enum": ["start", "stop"]
+        },
+        "fps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "duration_ms": {
+          "anyOf": [
+            {"const": 0},
+            {"type": "integer", "minimum": 1000, "maximum": 30000}
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"action": {"const": "start"}}
+          },
+          "then": {
+            "required": ["fps", "duration_ms"]
+          }
+        },
+        {
+          "if": {
+            "properties": {"action": {"const": "stop"}}
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {"required": ["fps"]},
+                {"required": ["duration_ms"]}
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "frame_begin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frame_id", "format", "width", "height", "size", "chunk_count"],
+      "properties": {
+        "frame_id": {"type": "string", "minLength": 1, "maxLength": 96},
+        "format": {"const": "jpeg"},
+        "width": {"const": 320},
+        "height": {"const": 240},
+        "size": {"type": "integer", "minimum": 2, "maximum": 65536},
+        "chunk_count": {"type": "integer", "minimum": 1, "maximum": 32}
+      }
+    },
+    "frame_chunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frame_id", "index", "chunk_count", "data"],
+      "properties": {
+        "frame_id": {"type": "string", "minLength": 1, "maxLength": 96},
+        "index": {"type": "integer", "minimum": 0, "maximum": 31},
+        "chunk_count": {"type": "integer", "minimum": 1, "maximum": 32},
+        "data": {"type": "string", "minLength": 1, "contentEncoding": "base64"}
+      }
+    },
+    "frame_end": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["frame_id", "size"],
+      "properties": {
+        "frame_id": {"type": "string", "minLength": 1, "maxLength": 96},
+        "size": {"type": "integer", "minimum": 2, "maximum": 65536}
+      }
+    }
+  }
+}

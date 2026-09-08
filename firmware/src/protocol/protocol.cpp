@@ -2,12 +2,18 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 
 namespace lifeos::protocol {
 namespace {
+
+#ifndef LIFEOS_MANUAL_CONTROL_V1
+#define LIFEOS_MANUAL_CONTROL_V1 0
+#endif
 
 struct Span {
   std::size_t begin{0};
@@ -92,6 +98,46 @@ bool field(std::string_view object, std::string_view name, Span& output) {
 }
 
 template <std::size_t N>
+bool object_keys_allowed(std::string_view object,
+                         const std::array<std::string_view, N>& allowed) {
+  if (object.size() < 2 || object.front() != '{' || object.back() != '}') return false;
+  std::array<std::string_view, N> seen{};
+  std::size_t seen_count = 0;
+  std::size_t cursor = 1;
+  while (cursor < object.size() - 1) {
+    while (cursor < object.size() && whitespace(object[cursor])) ++cursor;
+    if (cursor >= object.size() - 1) return false;
+    std::size_t key_end = 0;
+    if (!string_end(object, cursor, key_end)) return false;
+    const auto key = object.substr(cursor + 1, key_end - cursor - 2);
+    bool accepted = false;
+    for (const auto candidate : allowed) {
+      if (candidate == key) {
+        accepted = true;
+        break;
+      }
+    }
+    if (!accepted || seen_count >= N ||
+        std::find(seen.begin(), seen.begin() + static_cast<std::ptrdiff_t>(seen_count), key) !=
+            seen.begin() + static_cast<std::ptrdiff_t>(seen_count)) {
+      return false;
+    }
+    seen[seen_count++] = key;
+    cursor = key_end;
+    while (cursor < object.size() && whitespace(object[cursor])) ++cursor;
+    if (cursor >= object.size() || object[cursor++] != ':') return false;
+    while (cursor < object.size() && whitespace(object[cursor])) ++cursor;
+    std::size_t value_end_at = 0;
+    if (!value_end(object, cursor, value_end_at)) return false;
+    cursor = value_end_at;
+    while (cursor < object.size() && whitespace(object[cursor])) ++cursor;
+    if (cursor == object.size() - 1) return seen_count > 0;
+    if (cursor >= object.size() || object[cursor++] != ',') return false;
+  }
+  return seen_count > 0;
+}
+
+template <std::size_t N>
 bool copy_text(std::string_view source, Span span, BoundedText<N>& output) {
   if (span.end <= span.begin + 1 || source[span.begin] != '"' ||
       source[span.end - 1] != '"' || span.end - span.begin - 2 > N) return false;
@@ -136,6 +182,18 @@ bool number(std::string_view source, Span span, std::uint64_t& output) {
   const auto parsed = std::from_chars(value.data(), value.data() + value.size(), output);
   return parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size();
 }
+
+#if LIFEOS_MANUAL_CONTROL_V1
+bool decimal(std::string_view source, Span span, float& output) {
+  const auto value = source.substr(span.begin, span.end - span.begin);
+  if (value.empty() || value.size() >= 32) return false;
+  char buffer[32]{};
+  std::memcpy(buffer, value.data(), value.size());
+  char* end = nullptr;
+  output = std::strtof(buffer, &end);
+  return end == buffer + value.size() && std::isfinite(output);
+}
+#endif
 
 bool copy_object(std::string_view source, Span span,
                  BoundedText<kMaxPayloadBytes>& output) {
@@ -302,6 +360,99 @@ ParseResult parse(std::string_view line) {
   return result;
 }
 
+ParseError parse_manual_control_payload(const Envelope& envelope,
+                                        ManualControlPayload& output,
+                                        std::uint64_t now_ms) {
+#if !LIFEOS_MANUAL_CONTROL_V1
+  (void)envelope;
+  (void)output;
+  (void)now_ms;
+  return ParseError::UnsupportedKind;
+#else
+  if (envelope.kind != Kind::Command || envelope.type.view() != "command.manual_control") {
+    return ParseError::UnsupportedKind;
+  }
+  const auto payload = envelope.payload.view();
+  if (!object_keys_allowed(
+          payload,
+          std::array<std::string_view, 5>{"lease_id", "input_seq", "action", "direction", "ttl_ms"})) {
+    return ParseError::InvalidPayload;
+  }
+  Span span;
+  if (!field(payload, "lease_id", span) || !copy_text(payload, span, output.lease_id) ||
+      output.lease_id.size == 0 || !field(payload, "input_seq", span) ||
+      !number(payload, span, output.input_seq) || output.input_seq == 0 ||
+      !field(payload, "ttl_ms", span) || !number(payload, span, output.ttl_ms) ||
+      output.ttl_ms < 300 || output.ttl_ms > 500) {
+    return ParseError::InvalidPayload;
+  }
+  BoundedText<16> action;
+  if (!field(payload, "action", span) || !copy_text(payload, span, action)) {
+    return ParseError::InvalidPayload;
+  }
+  if (action.view() == "input") {
+    output.action = ManualAction::Input;
+    if (!field(payload, "direction", span) || span.end <= span.begin + 1 ||
+        payload[span.begin] != '{' || payload[span.end - 1] != '}') {
+      return ParseError::InvalidPayload;
+    }
+    const auto direction = payload.substr(span.begin, span.end - span.begin);
+    if (!object_keys_allowed(direction, std::array<std::string_view, 2>{"yaw", "pitch"})) {
+      return ParseError::InvalidPayload;
+    }
+    Span yaw_span{}, pitch_span{};
+    if (!field(direction, "yaw", yaw_span) || !decimal(direction, yaw_span, output.yaw) ||
+        !field(direction, "pitch", pitch_span) || !decimal(direction, pitch_span, output.pitch) ||
+        output.yaw < -1.0F || output.yaw > 1.0F || output.pitch < -1.0F || output.pitch > 1.0F) {
+      return ParseError::InvalidPayload;
+    }
+    output.has_direction = true;
+    return ParseError::None;
+  }
+  if (action.view() == "release") {
+    output.action = ManualAction::Release;
+    Span direction_span{};
+    if (field(payload, "direction", direction_span)) return ParseError::InvalidPayload;
+    output.has_direction = false;
+    (void)now_ms;
+    return ParseError::None;
+  }
+  return ParseError::InvalidPayload;
+#endif
+}
+
+ParseError parse_camera_preview_payload(const Envelope& envelope,
+                                        CameraPreviewPayload& output) {
+  if (envelope.kind != Kind::Command || envelope.type.view() != "command.camera_preview") {
+    return ParseError::UnsupportedKind;
+  }
+  const auto payload = envelope.payload.view();
+  if (!object_keys_allowed(
+          payload,
+          std::array<std::string_view, 3>{"action", "fps", "duration_ms"})) {
+    return ParseError::InvalidPayload;
+  }
+  Span span;
+  if (!field(payload, "action", span) || !copy_text(payload, span, output.action)) {
+    return ParseError::InvalidPayload;
+  }
+  if (output.action.view() == "stop") {
+    if (field(payload, "fps", span) || field(payload, "duration_ms", span)) {
+      return ParseError::InvalidPayload;
+    }
+    return ParseError::None;
+  }
+  if (output.action.view() != "start" ||
+      !field(payload, "fps", span) || !number(payload, span, output.fps) ||
+      output.fps < 1 || output.fps > 10 ||
+      !field(payload, "duration_ms", span) || !number(payload, span, output.duration_ms) ||
+      (output.duration_ms != 0 &&
+       (output.duration_ms < 1000 || output.duration_ms > 30000))) {
+    return ParseError::InvalidPayload;
+  }
+  return ParseError::None;
+}
+
 bool serialize(const Envelope& envelope, char* output, std::size_t capacity,
                std::size_t& written) {
   written = 0;
@@ -351,6 +502,49 @@ bool ttl_valid(std::uint64_t issued_at_ms, std::uint64_t expires_at_ms,
                std::uint64_t now_ms, std::uint64_t max_age_ms) {
   if (expires_at_ms <= issued_at_ms || now_ms >= expires_at_ms || now_ms < issued_at_ms) return false;
   return now_ms - issued_at_ms <= max_age_ms;
+}
+
+bool control_action_allowed(std::string_view action) {
+  return action == "pause" || action == "resume" || action == "home" ||
+         action == "status" || action == "preflight" || action == "clear_fault";
+}
+
+bool json_true(std::string_view object, std::string_view name) {
+  Span value;
+  return field(object, name, value) && object.substr(value.begin, value.end - value.begin) == "true";
+}
+
+ParseError validate_command_payload(const Envelope& envelope) {
+  const auto payload = envelope.payload.view();
+  if (envelope.type.view() == "command.emergency_stop") return ParseError::None;
+  if (envelope.type.view() == "command.control") {
+    Span action_span;
+    BoundedText<32> action;
+    if (!field(payload, "action", action_span) || !copy_text(payload, action_span, action) ||
+        !control_action_allowed(action.view())) {
+      return ParseError::UnsupportedKind;
+    }
+    if (action.view() == "clear_fault" && !json_true(payload, "local_confirmation")) {
+      return ParseError::InvalidPayload;
+    }
+    return ParseError::None;
+  }
+  if (envelope.type.view() == "command.intent" ||
+      envelope.type.view() == "command.maintenance_motion" ||
+      envelope.type.view() == "command.maintenance_fault") {
+    return ParseError::None;
+  }
+  if (envelope.type.view() == "command.camera_preview") {
+    CameraPreviewPayload ignored;
+    return parse_camera_preview_payload(envelope, ignored);
+  }
+#if LIFEOS_MANUAL_CONTROL_V1
+  if (envelope.type.view() == "command.manual_control") {
+    ManualControlPayload ignored;
+    return parse_manual_control_payload(envelope, ignored, 0);
+  }
+#endif
+  return ParseError::UnsupportedKind;
 }
 
 ParseError DuplicateCommandGuard::remember(std::string_view id) {
@@ -476,6 +670,11 @@ GatewayResult Gateway::ingest(std::string_view line, std::uint64_t now_ms) {
         result.error = ParseError::InvalidField;
         return result;
       }
+    }
+    const auto payload_error = validate_command_payload(envelope);
+    if (payload_error != ParseError::None) {
+      result.error = payload_error;
+      return result;
     }
   }
   const auto remembered = duplicate_.remember(envelope.event_id.view());

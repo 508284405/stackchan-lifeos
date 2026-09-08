@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stackchan.local/schemas/lifeos.v1/manual-control-v1.json",
+  "title": "LifeOS manual_control_v1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["lease_id", "input_seq", "action", "ttl_ms"],
+  "properties": {
+    "lease_id": {"type": "string", "minLength": 1, "maxLength": 96},
+    "input_seq": {"type": "integer", "minimum": 1},
+    "action": {"enum": ["input", "release"]},
+    "direction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["yaw", "pitch"],
+      "properties": {
+        "yaw": {"type": "number", "minimum": -1, "maximum": 1},
+        "pitch": {"type": "number", "minimum": -1, "maximum": 1}
+      }
+    },
+    "ttl_ms": {"type": "integer", "minimum": 300, "maximum": 500}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"action": {"const": "input"}}},
+      "then": {"required": ["direction"]}
+    },
+    {
+      "if": {"properties": {"action": {"const": "release"}}},
+      "then": {"not": {"required": ["direction"]}}
+    }
+  ]
+}

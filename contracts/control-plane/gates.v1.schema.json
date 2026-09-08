@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stackchan.local/schemas/control-plane/v1/gates.json",
+  "title": "StackChan LifeOS W6 Capability Gates v1",
+  "description": "Design baseline only; this file is not a runtime feature-flag source.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "contract_version", "status", "web_authentication_required", "gates"],
+  "properties": {
+    "schema": {"const": "lifeos.control-plane.gates.v1"},
+    "contract_version": {"const": "1.0.0"},
+    "status": {"const": "design_only"},
+    "web_authentication_required": {"const": true},
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["public_network_ingress", "remote_motion", "destructive_operations", "ota"],
+      "properties": {
+        "public_network_ingress": {"const": false},
+        "remote_motion": {"const": false},
+        "destructive_operations": {"const": false},
+        "ota": {"const": false}
+      }
+    }
+  }
+}

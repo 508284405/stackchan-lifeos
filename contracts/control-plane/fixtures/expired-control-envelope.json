@@ -1,0 +1,29 @@
+{
+  "schema": "lifeos.control-plane.v1",
+  "contract_version": "1.0.0",
+  "kind": "command",
+  "message_type": "control.command",
+  "message_id": "msg-expired-01",
+  "sender": {
+    "entity_type": "control_plane",
+    "entity_id": "control-plane",
+    "site_id": "control",
+    "certificate_fingerprint_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "recipient": {
+    "entity_type": "edge_agent",
+    "entity_id": "edge-a",
+    "site_id": "site-a",
+    "device_id": "device-01"
+  },
+  "issued_at_ms": 1699999900000,
+  "expires_at_ms": 1699999901000,
+  "seq": 8,
+  "session": {
+    "session_id": "cp-session-control-01",
+    "session_nonce": "TEST_ONLY_nonce_control_000001",
+    "direction": "control_to_edge",
+    "epoch": 1
+  },
+  "payload": {"command": "control.home"}
+}

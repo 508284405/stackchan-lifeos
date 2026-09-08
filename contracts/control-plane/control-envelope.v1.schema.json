@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stackchan.local/schemas/control-plane/v1/control-envelope.json",
+  "title": "StackChan LifeOS Control Plane Envelope v1",
+  "description": "Versioned Edge-to-control-plane envelope. This is not a lifeos.v1 device envelope.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contract_version",
+    "kind",
+    "message_type",
+    "message_id",
+    "sender",
+    "recipient",
+    "issued_at_ms",
+    "expires_at_ms",
+    "seq",
+    "session",
+    "payload"
+  ],
+  "properties": {
+    "schema": {"const": "lifeos.control-plane.v1"},
+    "contract_version": {"const": "1.0.0"},
+    "kind": {"enum": ["hello", "heartbeat", "command", "ack", "event", "credential", "migration"]},
+    "message_type": {
+      "enum": [
+        "edge.hello",
+        "edge.heartbeat",
+        "edge.device_event",
+        "edge.device_snapshot",
+        "control.command",
+        "control.command_ack",
+        "control.credential_rotate",
+        "control.credential_revoke",
+        "control.site_migration",
+        "control.ota"
+      ]
+    },
+    "message_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$"},
+    "correlation_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$"},
+    "sender": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_type", "entity_id", "site_id", "certificate_fingerprint_sha256"],
+      "properties": {
+        "entity_type": {"enum": ["control_plane", "edge_agent"]},
+        "entity_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "site_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "certificate_fingerprint_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "recipient": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_type", "entity_id", "site_id"],
+      "properties": {
+        "entity_type": {"enum": ["control_plane", "edge_agent"]},
+        "entity_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "site_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "device_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"}
+      }
+    },
+    "issued_at_ms": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "expires_at_ms": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "seq": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session_id", "session_nonce", "direction", "epoch"],
+      "properties": {
+        "session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$"},
+        "session_nonce": {"type": "string", "pattern": "^[A-Za-z0-9_-]{22,128}$"},
+        "direction": {"enum": ["edge_to_control", "control_to_edge"]},
+        "epoch": {"type": "integer", "minimum": 0, "maximum": 2147483647}
+      }
+    },
+    "device_session": {
+      "type": "object",
+      "description": "Opaque local-device binding. The raw device nonce never crosses this boundary.",
+      "additionalProperties": false,
+      "required": ["device_id", "edge_id", "device_session_id", "device_nonce_sha256"],
+      "properties": {
+        "device_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "edge_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "device_session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,95}$"},
+        "device_nonce_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "device_rx_seq": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+        "device_tx_seq": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807}
+      }
+    },
+    "payload": {"type": "object", "maxProperties": 32}
+  }
+}

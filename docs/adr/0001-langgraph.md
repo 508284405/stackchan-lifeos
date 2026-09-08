@@ -10,7 +10,9 @@ LifeOS 需要把连续 observation、对话上下文、长期记忆、工具调�
 
 ## 决策
 
-主机 Agent 采用 Python LangGraph StateGraph/Graph API。图状态、节点、边和策略属于 LifeOS 代码；LLM provider 通过 Adapter 注入，默认 Adapter 连接本机 Codex CLI app-server。设备不依赖 LangGraph，也不接受图节点名称作为命令。
+主机 Agent 采用 Python LangGraph StateGraph/Graph API。图状态、节点、边和策略属于 LifeOS
+代码；LLM provider 通过 Adapter 注入。阶段 2 的默认 provider 由 ADR 0003 修订为 sub2api，
+不再连接本机 Codex CLI app-server。设备不依赖 LangGraph，也不接受图节点名称作为命令。
 
 ### 运行约定
 
@@ -22,13 +24,13 @@ LifeOS 需要把连续 observation、对话上下文、长期记忆、工具调�
 
 ## 原因
 
-LangGraph 官方文档明确提供持久化、thread/checkpoint、跨会话 store、中断恢复和流式事件等能力，正好覆盖 LifeOS 的持续状态和人工确认需求。它也允许使用非 LangChain 原生的 LLM API 作为流式来源，因此可把 Codex app-server 隔离在 Adapter 后面。
+LangGraph 官方文档明确提供持久化、thread/checkpoint、跨会话 store、中断恢复和流式事件等能力，正好覆盖 LifeOS 的持续状态和人工确认需求。provider 保持在 Adapter 后面，不能接管 LifeOS thread、checkpoint、工具执行或设备协议。
 
 ## 被拒绝的选项
 
 - 纯 prompt + while-loop：难以可靠恢复 checkpoint、审批和副作用，不利于回放测试。
 - 让设备直接调用 LLM：资源、网络和安全边界不符合 ESP32 身体层职责。
-- 把 Codex 原生 thread/turn 直接作为设备协议：Codex app-server 是实验性且版本绑定，原生 schema 变化会把主机升级风险传到固件。
+- 把 provider 原生 response/thread 直接作为设备协议：外部 API 变化会把主机升级风险传到固件。
 - 只使用长期数据库而不使用 graph checkpoint：无法恢复中断中的节点执行状态。
 
 ## 后果
@@ -38,7 +40,7 @@ LangGraph 官方文档明确提供持久化、thread/checkpoint、跨会话 stor
 ## 兼容/验收门禁
 
 1. InMemorySaver 仅用于单元测试，生产使用持久化实现。
-2. Adapter 必须屏蔽 Codex 的原生事件和 schema 变化。
+2. Adapter 必须屏蔽 provider 的原生事件、响应 ID 和 schema 变化。
 3. 图状态不能存原始音视频、密钥、shell 命令或不受限文件路径。
 4. 任何恢复测试都要覆盖“中断前副作用已执行”和“重复恢复”两种情况。
 
@@ -47,4 +49,5 @@ LangGraph 官方文档明确提供持久化、thread/checkpoint、跨会话 stor
 - [LangGraph 持久化](https://docs.langchain.com/oss/python/langgraph/persistence)
 - [LangGraph 中断](https://docs.langchain.com/oss/python/langgraph/interrupts)
 - [LangGraph 流式输出](https://docs.langchain.com/oss/python/langgraph/streaming)
-- [OpenAI Codex app-server README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
+- [ADR 0003：阶段 2 推理 Provider 采用 sub2api](0003-sub2api-provider.md)
+- [sub2api](https://github.com/Wei-Shaw/sub2api)

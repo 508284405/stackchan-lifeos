@@ -169,5 +169,30 @@ int main() {
       "\"event_id\":\"cmd-3\",\"device_id\":\"stackchan-01\",\"seq\":3,\"ts_ms\":1000,"
       "\"payload\":{\"action\":\"status\"}}";
   assert(gateway.ingest(command_seq3, 3002).accepted);
+  const char* preflight =
+      "{\"schema\":\"lifeos.v1\",\"kind\":\"command\",\"type\":\"command.control\","
+      "\"event_id\":\"cmd-preflight\",\"device_id\":\"stackchan-01\",\"seq\":4,\"ts_ms\":1000,"
+      "\"payload\":{\"action\":\"preflight\"}}";
+  assert(gateway.ingest(preflight, 3003).accepted);
+  const char* bad_action =
+      "{\"schema\":\"lifeos.v1\",\"kind\":\"command\",\"type\":\"command.control\","
+      "\"event_id\":\"cmd-bad\",\"device_id\":\"stackchan-01\",\"seq\":5,\"ts_ms\":1000,"
+      "\"payload\":{\"action\":\"reboot\"}}";
+  auto bad_action_result = gateway.ingest(bad_action, 3004);
+  assert(!bad_action_result.accepted && bad_action_result.error == ParseError::UnsupportedKind);
+
+  // The production/default build must keep the proposed manual-control wire
+  // type closed until the firmware integration and HIL gates are complete.
+  Gateway disabled_manual;
+  assert(disabled_manual.ingest(hello, 4000).accepted);
+  const char* manual_disabled =
+      "{\"schema\":\"lifeos.v1\",\"kind\":\"command\","
+      "\"type\":\"command.manual_control\",\"event_id\":\"manual-disabled\","
+      "\"device_id\":\"stackchan-01\",\"seq\":7,\"ts_ms\":4000,"
+      "\"payload\":{\"lease_id\":\"lease-1\",\"input_seq\":1,"
+      "\"action\":\"release\",\"ttl_ms\":400}}";
+  auto manual_disabled_result = disabled_manual.ingest(manual_disabled, 4001);
+  assert(!manual_disabled_result.accepted &&
+         manual_disabled_result.error == ParseError::UnsupportedKind);
   std::cout << "lifeos protocol tests passed\n";
 }

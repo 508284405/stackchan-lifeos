@@ -2,7 +2,7 @@
 
 状态：Draft  
 版本：0.1  
-范围：本机 Agent、桌面主机服务、StackChan/ESP32-S3 固件
+范围：本机 LangGraph Agent、sub2api provider、桌面主机服务、StackChan/ESP32-S3 固件
 
 ## 1. 目标与边界
 
@@ -13,7 +13,8 @@ LifeOS 把 StackChan 作为一个有持续状态的桌面实体：设备持续�
 - ESP32 不运行 LLM，不执行任意脚本，不直接暴露文件系统或主机命令。
 - Agent 只产生经过 schema 校验的意图和行为计划；不得发送 PWM、原始舵机速度或逐帧动画。
 - CGraph 是设备端任务编排层，不是实时操作系统；FreeRTOS/ESP-IDF 仍负责任务、驱动、中断和看门狗。
-- 所有网络能力默认关闭或仅绑定本机回环地址；设备与主机之间使用显式配对。
+- 设备控制网络默认关闭或仅绑定本机回环地址；主机访问 sub2api 必须显式配置
+  HTTPS endpoint、API key 和出站 allowlist。设备与主机之间仍使用显式配对。
 - 任何运动安全规则在设备端独立成立，即使主机、Agent 或链路失效也能停止运动。
 
 ## 2. 分层架构
@@ -33,11 +34,13 @@ flowchart TB
     API["Device Gateway\n配对/协议/背压/审计"]
     LG["LangGraph Agent\n感知→记忆→规划→审批→表达"]
     MEM["Checkpoint + long-term store"]
-    CODEX["Codex CLI app-server\n本机 Agent runtime"]
     API <--> LG
     LG <--> MEM
-    LG <--> CODEX
   end
+  subgraph PROVIDER["Configured inference provider"]
+    SUB2API["sub2api Gateway\nOpenAI Responses-compatible API"]
+  end
+  LG <-->|"HTTPS · structured intent only"| SUB2API
   DEVICE <-->|"LifeOS JSONL envelope\nUSB 优先，局域网可选"| API
 ```
 
@@ -46,7 +49,8 @@ flowchart TB
 1. CGraph 节点从传感器取得最新样本，丢弃过期帧并生成 `Observation`。
 2. Device Gateway 校验设备身份、序列号、时间戳和 payload 大小；不把原始图像默认送入主机。
 3. LangGraph 将 observation 写入短期状态，按策略触发对话、主动行为或记忆提炼。
-4. LLM 节点通过 Codex Adapter 使用本机 `codex app-server`。Adapter 只暴露允许的工具和结构化输出。
+4. LLM 节点通过 `Sub2APIProvider` 调用配置的 `/v1/responses`；请求只包含脱敏有界
+   context，远端不直接执行本机工具。
 5. Agent 输出 `IntentPlan`。Gateway 和设备端各自校验一次，CGraph 将可执行动作拆成有限行为节点。
 6. CGraph 执行时持续接受急停、触摸和健康事件；任何安全条件优先于 Agent 计划。
 
@@ -77,7 +81,7 @@ receive_event
   → update_context
   → [needs_response?]
        ├─ no  → autonomy_policy → plan_reflex_or_idle → validate_intent
-       └─ yes → recall_memory → codex_reason → validate_intent
+       └─ yes → recall_memory → sub2api_reason → validate_intent
   → [requires_approval?]
        ├─ yes → interrupt_for_approval → validate_resume → dispatch
        └─ no  → dispatch
@@ -86,17 +90,22 @@ receive_event
 
 `interrupt` 只用于需要人类确认的边界，例如发送外部消息、控制家庭设备、保存新的长期个人事实。恢复必须复用同一个 `thread_id`，并且节点在恢复时可从头重跑，因此副作用使用幂等键或 outbox。
 
-### 3.3 Codex Adapter
+### 3.3 Sub2API Provider Adapter
 
-第一阶段以 Codex CLI 的本机 `app-server` 为 runtime，优先使用 stdio JSONL transport；不依赖实验性的 websocket transport。Adapter 负责：
+阶段 2 使用 sub2api 的 OpenAI Responses 兼容 HTTP API，不启动本机 Codex 进程。
+Adapter 负责：
 
-- 启动、健康检查、优雅退出和崩溃重启退避；
-- 完成 `initialize`/`initialized` 握手，维护 thread/turn 生命周期；
-- 将 Codex 事件转换为内部 `AgentEvent`，过滤 reasoning、路径、环境变量等不应下发内容；
-- 允许列表化工具与工作目录，拒绝 `exec`、文件写入和网络访问，除非另有显式审批；
-- 按当前 Codex 二进制生成并锁定 JSON Schema。Codex 官方说明 app-server schema 与所运行版本绑定，因此不得手写一套“永远兼容”的原生协议。
+- 标准化 base URL，使用 Bearer API key，执行 TLS、连接/总超时和 model 健康检查；
+- 将本地 bounded context 转为 `/v1/responses` 请求，并把 usage/request ID/latency
+  转为内部 `ProviderResult`；
+- 对 structured output 再执行 Pydantic/schema 校验；partial stream 不作为有效结果；
+- 过滤 raw media、路径、环境变量、nonce、设备 wire envelope 和工具原始输出；
+- 将 401/403、429、5xx、timeout、network、invalid response 映射为稳定错误类别；
+- 不把 sub2api response ID 当作 LangGraph thread/checkpoint，也不让远端直接执行工具。
 
-Codex app-server 本身是实验性接口，升级必须通过 adapter contract test；协议变化不能直接泄漏到 LangGraph 节点或设备协议。
+API key 不进入 graph state、checkpoint、日志或设备协议。真实调用必须显式 opt-in；
+默认开发/回放使用 mock 或 deterministic provider。完整计划见
+[阶段 2：LangGraph + sub2api 任务计划](phase2-sub2api-plan.md)。
 
 ## 4. 设备侧 CGraph 与 ESP-IDF
 
@@ -147,7 +156,8 @@ CGraph node → LifeOS domain interface → ESP-IDF/M5Stack HAL → hardware
 
 ## 5. 故障隔离与降级
 
-- Codex 不可用：LangGraph 进入 `DEGRADED_LOCAL`；设备仍运行眨眼、待机、触摸反馈和安全动作。
+- sub2api/上游不可用、限流或鉴权失败：LangGraph 进入 `DEGRADED_LOCAL`；设备仍运行
+  眨眼、待机、触摸反馈和安全动作，不自动回退本机 Codex。
 - LangGraph 不可用：Gateway 丢弃非紧急 agent command，设备进入本地 idle。
 - 链路断开：设备停止接受旧命令，超时后回到安全姿态并释放扭矩。
 - CGraph/FreeRTOS 任务异常：看门狗复位；启动时保持舵机停止，需完成自检后才允许动作。
@@ -160,12 +170,23 @@ CGraph node → LifeOS domain interface → ESP-IDF/M5Stack HAL → hardware
 ```text
 Host process
  ├─ LangGraph service
- ├─ Codex Adapter → local codex app-server (stdio)
+ ├─ Sub2APIProvider → configured sub2api /v1/responses (HTTPS)
  ├─ Device Gateway → USB CDC/serial
  └─ local checkpoint/store
 ```
 
 多设备、局域网 transport、云端模型和 Home Assistant 集成属于后续阶段，必须先通过 `protocol.md` 的版本协商、配对和审计要求。
+
+### 6.1 Web Bridge 扩展方向
+
+多设备管理与远程控制已进入独立 RFC 设计，不修改上述第一阶段拓扑和验收口径。
+Web Bridge 位于浏览器与 Device Gateway 之间，为每台设备维护独立 registry、session、
+seq、nonce、ACK、TTL、命令和审计状态；浏览器协议不能直接成为设备 wire message。
+
+当前交付以一台真实 USB 设备完整闭环为验收目标，产品架构面向未来 200 台，但未做
+容量验证。Wi-Fi、4G 和多站点通过可替换 transport 与 Edge Agent 演进，继续复用
+`lifeos.v1` 和设备端 safety contract。详见
+`docs/rfc/0001-web-bridge-fleet-control.md`。
 
 ## 7. 参考资料
 
@@ -174,6 +195,6 @@ Host process
 - [LangGraph 持久化](https://docs.langchain.com/oss/python/langgraph/persistence)
 - [LangGraph 中断与人工确认](https://docs.langchain.com/oss/python/langgraph/interrupts)
 - [LangGraph 流式输出](https://docs.langchain.com/oss/python/langgraph/streaming)
-- [OpenAI Codex app-server 官方源码文档](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md)
+- [sub2api 官方仓库](https://github.com/Wei-Shaw/sub2api)
 - [CGraph 官方仓库与 README](https://github.com/ChunelFeng/CGraph)
 - [CGraph 官方编译说明](https://github.com/ChunelFeng/CGraph/blob/main/COMPILE.md)
