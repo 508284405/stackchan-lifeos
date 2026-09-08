@@ -275,6 +275,22 @@ def test_preflight_ack_is_terminal_but_does_not_claim_fresh_feedback():
     assert len(preflight) == 1
 
 
+def test_resume_ack_is_terminal_after_the_firmware_synchronously_clears_pause():
+    async def scenario():
+        bridge = Bridge()
+        transport = FakeTransport(capabilities={"status", "motion"}, auto_ack=False)
+        bridge.discover(transport.candidate())
+        device = bridge.claim(transport.candidate().candidate_id)
+        await bridge.connect(device.device_id, transport)
+        command = await bridge.submit_command(device.device_id, "control.resume")
+        await transport.acknowledge_pending(command.command_id, status="accepted")
+        return bridge.get_command(command.command_id)
+
+    command = run(scenario())
+    assert command.state is CommandState.COMPLETED
+    assert command.result == {"status": "accepted", "idempotent": False}
+
+
 def test_preflight_rejects_a_device_without_the_versioned_capability():
     async def scenario():
         bridge = Bridge(feature_gates={"manual_control_v1": True})

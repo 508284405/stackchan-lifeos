@@ -430,13 +430,21 @@ export function DeviceControls({ device, featureGates, onChanged }) {
   const controlEnabled = featureGates?.control === true;
   const manualEnabled = featureGates?.manual_control_v1 === true;
   const mediaEnabled = featureGates?.media === true;
-  const motionSafe = health.fault !== true && health.feedback_frozen !== true &&
-    health.link_lost !== true &&
-    (!Number.isFinite(health.feedback_age_ms) || health.feedback_age_ms <= 400);
+  const safetyClear = health.fault !== true && health.feedback_frozen !== true &&
+    health.link_lost !== true;
+  const feedbackFresh = !Number.isFinite(health.feedback_age_ms) || health.feedback_age_ms <= 400;
+  // Torque-off is a safe idle state. It may have deliberately old feedback
+  // until the zero-motion preflight refreshes it, so it may resume/preflight
+  // but must not unlock direction input by itself.
+  const safeIdle = safetyClear && health.torque_enabled === false;
+  const canResume = safetyClear && (feedbackFresh || safeIdle);
   const canPreflight = online && controlEnabled && manualEnabled &&
     capabilities.has("manual_control_v1") && capabilities.has("manual_preflight_v1") &&
     health.fault !== true && health.feedback_frozen !== true &&
-    health.link_lost !== true && health.paused !== true && !motionSafe;
+    health.link_lost !== true && health.paused !== true;
+  const manualReady = online && controlEnabled && manualEnabled &&
+    capabilities.has("manual_control_v1") && safetyClear && feedbackFresh &&
+    health.paused !== true;
 
   const submit = async (type, emergency = false) => {
     setPending(type);
@@ -465,8 +473,8 @@ export function DeviceControls({ device, featureGates, onChanged }) {
     ["control.status", "control.status", "status", true],
     ["control.pause", "control.pause", "motion", true],
     ["control.preflight", "control.preflight", "manual_preflight_v1", canPreflight],
-    ["control.resume", "control.resume", "motion", motionSafe],
-    ["control.home", "control.home", "motion", motionSafe],
+    ["control.resume", "control.resume", "motion", canResume],
+    ["control.home", "control.home", "motion", safetyClear && feedbackFresh],
   ];
 
   return (
@@ -504,7 +512,7 @@ export function DeviceControls({ device, featureGates, onChanged }) {
       </section>
       <ManualControl
         device={device}
-        enabled={online && controlEnabled && manualEnabled && capabilities.has("manual_control_v1") && motionSafe}
+        enabled={manualReady}
         onCameraPreviewStopped={() => setManualPreviewStopVersion((value) => value + 1)}
       />
       <CameraPreview

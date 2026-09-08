@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 
 import uvicorn
 
@@ -28,6 +29,9 @@ TERMINAL_STATES = {
 # read-only one based on an omitted command-line flag.
 REAL_CAMERA_PREVIEW_ENABLED = True
 REAL_MANUAL_CONTROL_V1_ENABLED = True
+RECONNECT_INITIAL_DELAY_S = 0.5
+RECONNECT_MAX_DELAY_S = 8.0
+logger = logging.getLogger(__name__)
 
 
 async def wait_online(bridge: Bridge, device_id: str, timeout_s: float) -> DeviceSession:
@@ -87,16 +91,18 @@ def build_app(
     )
     bridge.discover(candidate)
     bridge.claim(candidate.candidate_id)
-    transport = UsbSerialTransport(
-        port,
-        transport_id=f"usb:{port}:web-manual",
-        startup_grace_s=startup_grace_s,
-        manual_control_verified=True,
-    )
     app = create_app(bridge)
 
-    @app.on_event("startup")
-    async def connect_real_device() -> None:
+    def new_transport() -> UsbSerialTransport:
+        return UsbSerialTransport(
+            port,
+            transport_id=f"usb:{port}:web-manual",
+            startup_grace_s=startup_grace_s,
+            manual_control_verified=True,
+        )
+
+    async def connect_real_device() -> DeviceSession:
+        transport = new_transport()
         session = await bridge.connect(device_id, transport)
         session = await wait_online(bridge, device_id, timeout_s=8.0)
         command = await bridge.submit_command(device_id, "control.status")
@@ -114,18 +120,45 @@ def build_app(
             await bridge.disconnect(session.session_id)
             raise RuntimeError("real device did not declare manual_control_v1")
         app.state.real_session_id = session.session_id
+        app.state.real_transport = transport
+        return session
+
+    async def reconnect_real_device() -> None:
+        """Reconnect only after a fully fenced session; never replay control."""
+
+        delay_s = RECONNECT_INITIAL_DELAY_S
+        while True:
+            await asyncio.sleep(0.25)
+            session = bridge.active_session_for_device(device_id)
+            if session is not None and session.state in {SessionState.ONLINE, SessionState.DEGRADED}:
+                delay_s = RECONNECT_INITIAL_DELAY_S
+                continue
+            if session is not None:
+                await bridge.disconnect(session.session_id)
+            try:
+                await connect_real_device()
+            except Exception as exc:
+                logger.warning("real device reconnect failed: %s", exc)
+                await asyncio.sleep(delay_s)
+                delay_s = min(delay_s * 2, RECONNECT_MAX_DELAY_S)
+
+    @app.on_event("startup")
+    async def start_real_device() -> None:
+        await connect_real_device()
+        app.state.real_reconnect_task = asyncio.create_task(reconnect_real_device())
 
     @app.on_event("shutdown")
     async def disconnect_real_device() -> None:
-        session_id = getattr(app.state, "real_session_id", None)
-        if session_id is not None:
-            await bridge.disconnect(session_id)
-        else:
-            await transport.close()
+        reconnect_task = getattr(app.state, "real_reconnect_task", None)
+        if reconnect_task is not None:
+            reconnect_task.cancel()
+            await asyncio.gather(reconnect_task, return_exceptions=True)
+        session = bridge.active_session_for_device(device_id)
+        if session is not None:
+            await bridge.disconnect(session.session_id)
         bridge.store.close()
 
     app.state.real_bridge = bridge
-    app.state.real_transport = transport
     return app
 
 

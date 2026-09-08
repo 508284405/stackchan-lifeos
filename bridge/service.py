@@ -1211,12 +1211,16 @@ class Bridge:
         status = payload.get("status")
         if status in {"accepted", "clamped"}:
             # Camera start remains ACCEPTED until the first complete JPEG
-            # proves the mode is producing frames. Camera stop and zero-motion
-            # preflight are terminal once the device accepts their bounded work;
-            # the next health snapshot still decides whether controls unlock.
+            # proves the mode is producing frames. Pause/resume mutate the
+            # device safety state synchronously, while camera stop and
+            # zero-motion preflight are bounded control hand-offs; all are
+            # terminal once the device accepts their bounded work. The next
+            # health snapshot still decides whether manual controls unlock.
             target = (
                 CommandState.COMPLETED
                 if command.type in {
+                    "control.pause",
+                    "control.resume",
                     "camera.preview.stop",
                     "control.preflight",
                     "manual_control",
