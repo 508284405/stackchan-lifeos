@@ -405,14 +405,17 @@ std::uint16_t StackChanServoPair::angle_to_raw(float angle, float zero,
                                                 float minimum, float maximum,
                                                 std::uint16_t default_zero) {
   if (!std::isfinite(angle) || angle < minimum || angle > maximum) return 0;
-  const float raw = static_cast<float>(default_zero) + (angle - zero) * kRawStepsPerDegree;
+  // The StackChan servos are mounted opposite to the raw-counter convention.
+  // Keep higher layers in physical coordinates; only this HAL conversion
+  // applies the mechanical inversion.
+  const float raw = static_cast<float>(default_zero) - (angle - zero) * kRawStepsPerDegree;
   if (raw < kRawMin || raw > kRawMax) return 0;
   return static_cast<std::uint16_t>(std::lround(raw));
 }
 
 float StackChanServoPair::raw_to_angle(std::uint16_t raw, std::uint16_t zero,
                                        float home, float minimum, float maximum) {
-  const float angle = home + (static_cast<float>(raw) - static_cast<float>(zero)) /
+  const float angle = home - (static_cast<float>(raw) - static_cast<float>(zero)) /
                                 kRawStepsPerDegree;
   return std::max(minimum, std::min(maximum, angle));
 }

@@ -163,12 +163,16 @@ class Bridge:
         now_factory: Callable[[], datetime] | None = None,
         feature_gates: dict[str, bool] | None = None,
         event_log: EventLog | None = None,
+        camera_preview_fps: int = CAMERA_PREVIEW_FPS,
     ) -> None:
+        if not isinstance(camera_preview_fps, int) or isinstance(camera_preview_fps, bool) or not 1 <= camera_preview_fps <= CAMERA_PREVIEW_FPS:
+            raise ValueError("camera_preview_fps must be an integer in [1, 10]")
         self.store = store or SQLiteStore()
         self.registry = DeviceRegistry(self.store)
         self.sessions = SessionManager(self.store)
         self._clock_ms = clock_ms or (lambda: time.monotonic_ns() // 1_000_000)
         self._now = now_factory or utc_now
+        self.camera_preview_fps = camera_preview_fps
         self.events = event_log or EventLog()
         self.leases = ControlLeaseManager(now_factory=self._now)
         self.feature_gates = {
@@ -602,7 +606,10 @@ class Bridge:
             if current.state == SessionState.NEGOTIATING:
                 await self._send_host_hello(current)
         except Exception:
-            self._mark_session_offline(session, reason="transport_open_failed")
+            # A failed open can still have allocated a file descriptor or
+            # reader task. Fence and close it before the real-launcher's
+            # reconnect loop creates the next transport.
+            await self._fail_transport(session, "transport_open_failed")
             raise
         return self.sessions.get(session.session_id)
 
@@ -1396,7 +1403,10 @@ class Bridge:
         *,
         issued_at_ms: int,
         expires_at_ms: int,
+        camera_preview_fps: int = CAMERA_PREVIEW_FPS,
     ) -> MappedCommand:
+        if not isinstance(camera_preview_fps, int) or isinstance(camera_preview_fps, bool) or not 1 <= camera_preview_fps <= CAMERA_PREVIEW_FPS:
+            raise ValidationError("camera_preview_fps must be an integer in [1, 10]")
         if not isinstance(command_type, str) or command_type.startswith("command."):
             raise ValidationError("browser cannot submit raw lifeos command types")
         if not isinstance(params, dict):
@@ -1429,7 +1439,7 @@ class Bridge:
             action = "start" if command_type.endswith(".start") else "stop"
             payload = {"action": action}
             if action == "start":
-                payload.update({"fps": CAMERA_PREVIEW_FPS, "duration_ms": 0})
+                payload.update({"fps": camera_preview_fps, "duration_ms": 0})
             return MappedCommand(
                 wire_type="command.camera_preview",
                 payload=payload,
@@ -1905,6 +1915,7 @@ class Bridge:
                 params,
                 issued_at_ms=issued_at_ms,
                 expires_at_ms=expires_at_ms,
+                camera_preview_fps=self.camera_preview_fps,
             )
         except ValidationError as exc:
             validation_error = {"code": "validation_error", "reason": str(exc)}

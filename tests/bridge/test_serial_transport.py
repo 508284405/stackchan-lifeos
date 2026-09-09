@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
+from bridge import Bridge, FakeTransport
 from bridge.errors import ProtocolError, TransportError
 from bridge.transports.serial import UsbSerialTransport
 
@@ -104,3 +105,24 @@ def test_usb_serial_transport_notifies_bridge_on_reader_disconnect():
     reasons = asyncio.run(scenario())
     assert reasons
     assert "USB serial" in reasons[0]
+
+
+def test_failed_transport_open_is_closed_before_a_reconnect_can_retry():
+    async def scenario():
+        bridge = Bridge()
+        transport = FakeTransport()
+        transport.connected = True
+
+        async def fail_open(_receiver):
+            raise TransportError("open failed")
+
+        transport.open = fail_open
+        bridge.discover(transport.candidate())
+        device = bridge.claim(transport.candidate().candidate_id)
+        with pytest.raises(TransportError, match="open failed"):
+            await bridge.connect(device.device_id, transport)
+        return transport, bridge.active_session_for_device(device.device_id)
+
+    transport, active = asyncio.run(scenario())
+    assert transport.connected is False
+    assert active is None

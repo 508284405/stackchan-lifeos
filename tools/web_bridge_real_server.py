@@ -29,6 +29,7 @@ TERMINAL_STATES = {
 # read-only one based on an omitted command-line flag.
 REAL_CAMERA_PREVIEW_ENABLED = True
 REAL_MANUAL_CONTROL_V1_ENABLED = True
+REAL_MANUAL_PREVIEW_FPS = 2
 RECONNECT_INITIAL_DELAY_S = 0.5
 RECONNECT_MAX_DELAY_S = 8.0
 logger = logging.getLogger(__name__)
@@ -74,6 +75,7 @@ def build_app(
             "manual_control_v1": REAL_MANUAL_CONTROL_V1_ENABLED,
             "manual_camera_preview": True,
         },
+        camera_preview_fps=REAL_MANUAL_PREVIEW_FPS,
     )
     capabilities = {
         "status",

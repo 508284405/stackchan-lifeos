@@ -24,6 +24,18 @@ def setup_media_bridge():
     return bridge, transport, device
 
 
+def test_bridge_uses_an_explicitly_configured_camera_preview_rate():
+    bridge = Bridge(feature_gates={"media": True}, camera_preview_fps=2)
+    mapped = bridge.map_web_command(
+        "camera.preview.start",
+        {},
+        issued_at_ms=1,
+        expires_at_ms=10_001,
+        camera_preview_fps=bridge.camera_preview_fps,
+    )
+    assert mapped.payload == {"action": "start", "fps": 2, "duration_ms": 0}
+
+
 def test_camera_frame_wait_wakes_on_publish_without_polling_delay():
     async def scenario():
         store = CameraFrameStore()
