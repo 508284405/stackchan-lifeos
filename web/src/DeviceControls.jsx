@@ -284,13 +284,13 @@ function ManualControl({ device, enabled, onCameraPreviewStopped }) {
       </div>
       <div className="manual-pad" aria-label={t("manual.pad")}>
         <span></span>
-        {button(t("manual.up"), { yaw: 0, pitch: -1 })}
+        {button(t("manual.up"), { yaw: 0, pitch: 1 })}
         <span></span>
-        {button(t("manual.left"), { yaw: -1, pitch: 0 })}
+        {button(t("manual.left"), { yaw: 1, pitch: 0 })}
         <span className="manual-pad-center" aria-hidden="true">·</span>
-        {button(t("manual.right"), { yaw: 1, pitch: 0 })}
+        {button(t("manual.right"), { yaw: -1, pitch: 0 })}
         <span></span>
-        {button(t("manual.down"), { yaw: 0, pitch: 1 })}
+        {button(t("manual.down"), { yaw: 0, pitch: -1 })}
         <span></span>
       </div>
       {message && <p className="control-message" role="status">{message}</p>}

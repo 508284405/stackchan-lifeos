@@ -307,6 +307,39 @@ def test_control_websocket_stops_camera_before_acquiring_a_manual_lease():
     assert actions == ["start", "stop"]
 
 
+def test_real_manual_preview_gate_preserves_camera_during_lease_acquisition():
+    bridge = Bridge(feature_gates={
+        "manual_control_v1": True,
+        "media": True,
+        "manual_camera_preview": True,
+    })
+    transport = FakeTransport(capabilities={"manual_control_v1", "status", "motion", "safety", "camera"})
+    bridge.discover(transport.candidate())
+    device = bridge.claim(transport.candidate().candidate_id)
+    asyncio.run(bridge.connect(device.device_id, transport))
+
+    with TestClient(create_app(bridge)) as client:
+        started = client.post(
+            f"/api/v1/devices/{device.device_id}/camera-preview",
+            json={"action": "start"},
+        )
+        assert started.status_code == 202
+        with client.websocket_connect("/api/v1/control") as websocket:
+            websocket.receive_json()
+            websocket.send_json({"type": "lease.acquire", "device_id": device.device_id})
+            acquired = websocket.receive_json()
+
+    assert acquired["type"] == "lease.acquired"
+    assert acquired["camera_preview_stopped"] is False
+    assert bridge._active_camera_previews
+    actions = [
+        frame.get("payload", {}).get("action")
+        for frame in transport.sent_frames
+        if frame.get("type") == "command.camera_preview"
+    ]
+    assert actions == ["start"]
+
+
 def test_control_websocket_stops_the_lease_when_a_manual_ack_is_missing():
     bridge = Bridge(feature_gates={"manual_control_v1": True})
     transport = FakeTransport(

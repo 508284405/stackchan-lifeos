@@ -72,6 +72,7 @@ def build_app(
             "usb_add": True,
             "media": REAL_CAMERA_PREVIEW_ENABLED,
             "manual_control_v1": REAL_MANUAL_CONTROL_V1_ENABLED,
+            "manual_camera_preview": True,
         },
     )
     capabilities = {

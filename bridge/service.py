@@ -179,6 +179,11 @@ class Bridge:
             "emergency_stop": True,
             "usb_add": False,
             "manual_control_v1": False,
+            # Real USB deployments may explicitly retain a bounded live
+            # preview while a dead-man lease is active. Keep the historic
+            # camera/manual hand-off as the safe default for every other
+            # Bridge instance.
+            "manual_camera_preview": False,
             "behavior": False,
             "speech": False,
             "maintenance": False,
@@ -2554,12 +2559,13 @@ class Bridge:
         ttl_ms: int = 400,
         max_duration_ms: int = 30_000,
     ) -> tuple[ControlLease, bool]:
-        """Stop a live preview before giving a browser a continuous-control lease."""
+        """Optionally preserve an explicitly enabled live preview during control."""
 
         async with self._control_mode_lock_for(device_id):
             session = self._manual_session(device_id)
             preview_active = self._active_camera_previews.get(device_id) == session.session_id
-            if preview_active:
+            preserve_preview = preview_active and self.feature_gates.get("manual_camera_preview", False)
+            if preview_active and not preserve_preview:
                 stop = await self._submit_camera_preview(device_id, "stop")
                 settled = await self._wait_for_terminal_command(
                     stop.command_id,
@@ -2576,7 +2582,7 @@ class Bridge:
                 ttl_ms=ttl_ms,
                 max_duration_ms=max_duration_ms,
             )
-            return lease, preview_active
+            return lease, preview_active and not preserve_preview
 
     def _manual_session(self, device_id: str) -> DeviceSession:
         if not self.feature_gates.get("manual_control_v1", False):

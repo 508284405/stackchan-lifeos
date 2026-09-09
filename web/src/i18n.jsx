@@ -136,7 +136,7 @@ export const messages = {
     "command.state.cancelled": "已取消",
 
     "manual.heading": "连续手动控制",
-    "manual.copy": "设备声明 manual_control_v1 且 Bridge 手动门禁开启后可用。开始方向控制会先停止预览；松开、失焦或断线会释放租约。",
+    "manual.copy": "设备声明 manual_control_v1 且 Bridge 手动门禁开启后可用。手控期间继续显示真实预览；松开、失焦或断线会释放租约。",
     "manual.pad": "手动方向控制",
     "manual.up": "向上",
     "manual.left": "向左",
@@ -151,10 +151,10 @@ export const messages = {
     "manual.state.error": "不可用",
     "manual.failed": "手动控制未建立",
     "manual.disconnected": "控制连接已断开",
-    "manual.cameraPaused": "为保持连接稳定，摄像头预览已停止",
+    "manual.cameraPaused": "摄像头预览已停止",
 
     "camera.heading": "摄像头预览",
-    "camera.copy": "显式开启后接收真实连续 MJPEG 视频流；不录制、不持久化。连续方向控制期间会暂停预览。",
+    "camera.copy": "显式开启后接收真实连续 MJPEG 视频流；不录制、不持久化。连续方向控制期间继续显示预览。",
     "camera.start": "开启预览",
     "camera.stop": "停止预览",
     "camera.requesting": "准备中…",
@@ -319,7 +319,7 @@ export const messages = {
     "command.state.cancelled": "Cancelled",
 
     "manual.heading": "Continuous manual control",
-    "manual.copy": "Available when the device declares manual_control_v1 and the Bridge manual gate is enabled. Starting direction control stops preview first; release, blur, or disconnect ends the lease.",
+    "manual.copy": "Available when the device declares manual_control_v1 and the Bridge manual gate is enabled. The real preview remains visible during direction control; release, blur, or disconnect ends the lease.",
     "manual.pad": "Manual direction control",
     "manual.up": "Up",
     "manual.left": "Left",
@@ -334,10 +334,10 @@ export const messages = {
     "manual.state.error": "Unavailable",
     "manual.failed": "Manual control could not be established",
     "manual.disconnected": "Control connection closed",
-    "manual.cameraPaused": "Camera preview stopped to keep the connection stable",
+    "manual.cameraPaused": "Camera preview stopped",
 
     "camera.heading": "Camera preview",
-    "camera.copy": "Start explicitly to receive a real continuous MJPEG video stream; nothing is recorded or persisted. Preview pauses during continuous manual control.",
+    "camera.copy": "Start explicitly to receive a real continuous MJPEG video stream; nothing is recorded or persisted. Preview remains visible during continuous manual control.",
     "camera.start": "Start preview",
     "camera.stop": "Stop preview",
     "camera.requesting": "Preparing…",

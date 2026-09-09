@@ -13,6 +13,10 @@ for (const direction of ["manual.up", "manual.left", "manual.right", "manual.dow
 
 assert.match(source, /manual_control_v1/);
 assert.match(source, /ttl_ms: 500/);
+assert.match(source, /manual\.up"\), \{ yaw: 0, pitch: 1 \}/);
+assert.match(source, /manual\.left"\), \{ yaw: 1, pitch: 0 \}/);
+assert.match(source, /manual\.right"\), \{ yaw: -1, pitch: 0 \}/);
+assert.match(source, /manual\.down"\), \{ yaw: 0, pitch: -1 \}/);
 assert.match(source, /const safeIdle = safetyClear && health\.torque_enabled === false/);
 assert.match(source, /const manualReady = online && controlEnabled && manualEnabled/);
 assert.match(source, /event\.key === "Enter" \|\| event\.key === " "/);
