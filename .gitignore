@@ -21,6 +21,7 @@ web/node_modules/
 .vscode/
 firmware/.cache/
 firmware/idf/.cache/
+firmware/.toolchains/
 firmware/compile_flags.txt
 output/
 artifacts/**/*.log

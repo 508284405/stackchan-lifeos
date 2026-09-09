@@ -20,11 +20,11 @@ namespace {
 
 constexpr const char* kTag = "lifeos-stackchan";
 constexpr std::uint32_t kI2cTimeoutMs = 100;
-// ESP32 camera JPEG quality is inverted: lower is higher quality. The
-// previous value produced roughly 2 KiB QVGA frames with visible macroblocks
-// in the browser; 4 preserves sensor detail while remaining below the
-// protocol's 64 KiB frame ceiling.
-constexpr std::uint8_t kCameraJpegQuality = 4;
+// The GC0308 emits RGB565, so frame2jpg() uses the software encoder's
+// 1–100 quality scale (higher is better). 80 matches the upstream converter
+// example and preserves QVGA detail while remaining below the 64 KiB frame
+// ceiling enforced by the device protocol.
+constexpr std::uint8_t kCameraJpegQuality = 80;
 // Match the official StackChan SCSerial IOTimeOut for every complete SCS
 // transaction.  The safety loop treats a failed transaction as a hard stop;
 // a later non-blocking transaction split can optimize scheduling separately.
