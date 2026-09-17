@@ -3,9 +3,10 @@
 
 Usage: capture_port.py PORT SECONDS OUTPUT [--reset]
 
---reset asks esptool (from the pinned IDF tools env) to run chip_id with
---after hard_reset, which reboots the device into the application while this
-script holds the port open, so the startup banner is captured.
+--reset asks esptool to run chip_id with --after hard_reset, which reboots the
+device into the application while this script holds the port open, so the
+startup banner is captured. esptool is resolved from --esptool,
+LIFEOS_ESPTOOL, or the current Python environment.
 """
 
 from __future__ import annotations
@@ -18,9 +19,6 @@ import subprocess
 import sys
 import termios
 import time
-
-ESPTOOL = "/Users/wangyu/Documents/Codex/2026-08-28/new-chat/work/idf-tools-5.5.4/python_env/idf5.5_py3.9_env/bin/esptool.py"
-
 
 def open_port(port: str) -> tuple[int, list]:
     fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
@@ -42,6 +40,14 @@ def main() -> int:
     parser.add_argument("seconds", type=float)
     parser.add_argument("output")
     parser.add_argument("--reset", action="store_true")
+    parser.add_argument(
+        "--esptool",
+        default=os.environ.get("LIFEOS_ESPTOOL"),
+        help=(
+            "esptool executable or .py path; defaults to `python -m esptool` "
+            "(or LIFEOS_ESPTOOL)"
+        ),
+    )
     args = parser.parse_args()
 
     fd, old = open_port(args.port)
@@ -52,8 +58,15 @@ def main() -> int:
             # esptool needs the port briefly; close, reset, reopen.
             termios.tcsetattr(fd, termios.TCSANOW, old)
             os.close(fd)
+            esptool_command = (
+                [sys.executable, args.esptool]
+                if args.esptool and args.esptool.endswith(".py")
+                else [args.esptool]
+                if args.esptool
+                else [sys.executable, "-m", "esptool"]
+            )
             subprocess.run(
-                [sys.executable, ESPTOOL, "--chip", "esp32s3", "--port", args.port,
+                [*esptool_command, "--chip", "esp32s3", "--port", args.port,
                  "--baud", "115200", "--before", "no_reset", "--after", "hard_reset",
                  "chip_id"],
                 check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

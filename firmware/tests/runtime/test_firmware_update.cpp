@@ -15,7 +15,7 @@ FirmwareUpdateManifest manifest() {
   FirmwareUpdateManifest value;
   std::strcpy(value.image_ref, "release-1");
   std::strcpy(value.version, "1.0.0");
-  std::strcpy(value.hardware_id, "1c:db:d4:ba:43:40");
+  std::strcpy(value.hardware_id, "02:00:00:00:00:01");
   std::memset(value.sha256_hex, 'a', 64);
   value.size_bytes = 4;
   value.secure_version = 2;
@@ -85,7 +85,7 @@ void canonical_manifest() {
   char text[kFirmwareManifestTextBytes]{};
   std::size_t size = 0;
   assert(firmware_manifest_text(value, text, sizeof(text), size));
-  const std::string expected = "lifeos-firmware-v1\nrelease-1\n1.0.0\n1c:db:d4:ba:43:40\n"
+  const std::string expected = "lifeos-firmware-v1\nrelease-1\n1.0.0\n02:00:00:00:00:01\n"
       "lifeos.v1\nota_ab_v1\n4\n" + std::string(64, 'a') + "\n2\n";
   assert(std::string(text, size) == expected);
   assert(!firmware_manifest_text(value, text, 10, size) && size == 0);

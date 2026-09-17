@@ -45,7 +45,7 @@ W5 Edge + W7 capacity 定向 tests: 16 passed
 Browser fake E2E: control command and camera MJPEG request PASS
 node/Vite web build: PASS
 python3 tools/validate_schemas.py: PASS
-direct USB hello/status read-only (`/dev/cu.usbmodem1101`): PASS
+direct USB hello/status read-only (`/dev/cu.usbmodemXXXX`): PASS
 Web Bridge service + USB adapter status/health/disconnect read-only: PASS
 real production continuous camera preview: 371 complete JPEG parts / 35 s, 10.57 fps: PASS
 real browser camera preview + enabled manual UI + lease acquire/release: PASS; console errors/warnings: 0/0
@@ -74,7 +74,7 @@ real browser camera preview + enabled manual UI + lease acquire/release: PASS; c
 ## 未测试 / 阻塞
 
 - Web Bridge 非计划长连接 USB discovery、断线/重连：**NOT TESTED**；直接
-  `/dev/cu.usbmodem1101` hello/status、一次性 service/adapter status/health、真实 camera
+  `/dev/cu.usbmodemXXXX` hello/status、一次性 service/adapter status/health、真实 camera
   MJPEG 和真实浏览器预览已 **PASS**。
 - 触摸暂停/清故障、8 小时 soak、真实机械卡滞、普通感知路径的传感器/camera capture：**NOT TESTED**；
   本轮只证明显式 Web camera preview 的真实采集和传输。
@@ -96,10 +96,10 @@ python3 tools/validate_schemas.py
 PYTHONPATH=. python3 tools/bridge_capacity.py --pretty
 # Read-only real-device checks; re-discover the current port before running.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/hil_usb_runner.py \
-  --port /dev/cu.usbmodem1101 --timeout 3
+  --port /dev/cu.usbmodemXXXX --timeout 3
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=. python3 tools/web_bridge_usb_acceptance.py \
-  --port /dev/cu.usbmodem1101 --device-id stackchan-01 \
-  --hardware-id 1c:db:d4:ba:43:40
+  --port /dev/cu.usbmodemXXXX --device-id stackchan-01 \
+  --hardware-id <device-mac>
 ```
 
 完整整仓回归：

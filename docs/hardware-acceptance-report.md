@@ -13,11 +13,10 @@ UART 和协议路径均已确认后仍无任何回包。为安全起见，设备
 
 ## 已通过的证据
 
-- 设备身份：`/dev/cu.usbmodem101`，VID/PID `0x303A:0x1001`，MAC
-  `1c:db:d4:ba:43:40`，ESP32-S3 rev 0.2，16 MiB flash。
+- 设备身份：`/dev/cu.usbmodemXXXX`，VID/PID `0x303A:0x1001`，MAC
+  `<device-mac>`，ESP32-S3 rev 0.2，16 MiB flash。
 - 原厂恢复资料已核验：
-  `/Users/wangyu/Documents/Codex/2026-08-28/new-chat/work/hardware-backups/`
-  `stackchan-1cdbd4ba4340-20260829-fullflash.bin`，SHA-256
+  `<secure-backup-dir>/stackchan-device-20260829-fullflash.bin`，SHA-256
   `669507af37296a09677b8b6ae831090a6cef357a634815011daf0f8622d11b35`。
 - 主机 `make test`：brain pytest、firmware C++、protocol、Phase 1 replay、
   schema、Codex contract 全部通过。
@@ -62,7 +61,7 @@ GPIO6/RX GPIO7、SCS ping/read packet、ID1 yaw/ID2 pitch、zero raw 460/620。
 
 ```sh
 python3 tools/phase1_hil.py \
-  --port /dev/cu.usbmodem101 \
+  --port /dev/cu.usbmodemXXXX \
   --allow-hardware \
   --require-touch \
   --soak-seconds 28800
@@ -102,8 +101,8 @@ HOME   -> OK HOME / OK HOME 0 degrees
 如需恢复，先确认上方备份 SHA-256，再进入 ROM download mode 后执行：
 
 ```sh
-python -m esptool --chip esp32s3 --port /dev/cu.usbmodem101 \
+python -m esptool --chip esp32s3 --port /dev/cu.usbmodemXXXX \
   --before no_reset --after hard_reset write_flash \
   --flash_mode dio --flash_size 16MB --flash_freq 80m \
-  0x0 /Users/wangyu/Documents/Codex/2026-08-28/new-chat/work/hardware-backups/stackchan-1cdbd4ba4340-20260829-fullflash.bin
+  0x0 <secure-backup-dir>/stackchan-device-20260829-fullflash.bin
 ```

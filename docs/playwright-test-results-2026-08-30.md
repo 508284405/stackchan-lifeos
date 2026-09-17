@@ -63,11 +63,11 @@ showed a new session/transport and `online` again. The mobile viewport reported
 
 ## Artifacts
 
-- [Online desktop screenshot](/Users/wangyu/product/stackchan-lifeos/output/playwright/web-bridge-recovered.png)
-- [Offline desktop screenshot](/Users/wangyu/product/stackchan-lifeos/output/playwright/web-bridge-offline.png)
-- [Mobile screenshot](/Users/wangyu/product/stackchan-lifeos/output/playwright/web-bridge-mobile.png)
-- [Feature inventory](/Users/wangyu/product/stackchan-lifeos/docs/system-feature-inventory.md)
-- [Black-box test cases](/Users/wangyu/product/stackchan-lifeos/docs/playwright-automation-test-cases.md)
+- Online desktop screenshot: `output/playwright/web-bridge-recovered.png` (local evidence, not committed)
+- Offline desktop screenshot: `output/playwright/web-bridge-offline.png` (local evidence, not committed)
+- Mobile screenshot: `output/playwright/web-bridge-mobile.png` (local evidence, not committed)
+- [Feature inventory](system-feature-inventory.md)
+- [Black-box test cases](playwright-automation-test-cases.md)
 
 ## Regression
 

@@ -187,7 +187,11 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--usb-port", required=True)
     parser.add_argument("--device-id", default="stackchan-01")
-    parser.add_argument("--hardware-id", default="1c:db:d4:ba:43:40")
+    parser.add_argument(
+        "--hardware-id",
+        required=True,
+        help="hardware ID reported by the device scan/hello response",
+    )
     parser.add_argument("--startup-grace", type=float, default=3.0)
     parser.add_argument(
         "--manual-control-evidence",

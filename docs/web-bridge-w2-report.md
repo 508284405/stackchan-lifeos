@@ -32,7 +32,7 @@ W2 使用 FastAPI 托管的零依赖静态 HTML/CSS/ES module，不引入前端�
 | `node --check web/app.js` | PASS |
 | Desktop 1440px screenshot | NOT REPRODUCIBLE（当前仓库未保留 PNG/截图产物） |
 | Mobile 390px screenshot + DOM width check | NOT REPRODUCIBLE（当前仓库未保留截图产物；需重新执行浏览器检查） |
-| Direct real USB hello/status read-only smoke | PASS（`/dev/cu.usbmodem1101`；见 `artifacts/web-bridge/usb-readonly-20260830.json`） |
+| Direct real USB hello/status read-only smoke | PASS（`/dev/cu.usbmodemXXXX`；见 `artifacts/web-bridge/usb-readonly-20260830.json`） |
 | Web Bridge service/USB adapter one-shot status/health/disconnect | PASS（见 `artifacts/web-bridge/usb-bridge-readonly-20260830.json`） |
 | Controlled 2-second USB disconnect/reconnect through Bridge | PASS（见 `artifacts/web-bridge/usb-bridge-reconnect-20260830.json`） |
 | Unplanned long-lived USB disconnect/reconnect | NOT TESTED |
@@ -57,7 +57,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS='-p no:cacheprovider' make test
 - 页面可展示离线/故障，但不能把 absence of telemetry 解释为 healthy。
 
 本次真实验收：生产固件 `lifeos-phase1-0.4.6` 在授权后刷入；
-`python3 tools/hil_usb_runner.py --port /dev/cu.usbmodem1101 --timeout 5` 返回
+`python3 tools/hil_usb_runner.py --port /dev/cu.usbmodemXXXX --timeout 5` 返回
 `blocked=false`、`safe_idle=true`、`camera_ready=true`；随后真实 Web Bridge 在 6 秒
 MJPEG 连接收到 13 个完整 JPEG part，浏览器页面显示实时帧，`control.status` 显示设备已完成。
 下一门禁是长时间运行中的 USB 断线/重连；真实远程运动仍受 Phase 1 整体出口约束。

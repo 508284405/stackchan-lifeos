@@ -2,9 +2,9 @@
   "status": "PASS",
   "mode": "web-bridge-usb-read-only",
   "observed_at": "2026-08-30T11:46:48Z",
-  "port": "/dev/cu.usbmodem1101",
+  "port": "/dev/cu.usbmodemXXXX",
   "device_id": "stackchan-01",
-  "hardware_id": "1c:db:d4:ba:43:40",
+  "hardware_id": "<device-mac>",
   "firmware": "lifeos-phase1-0.3.0",
   "protocol": "lifeos.v1",
   "bridge_session": {

@@ -2,6 +2,7 @@
   "name": "lifeos-web-console",
   "private": true,
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "type": "module",
   "description": "React source for the StackChan LifeOS Web Console; build output (dist/) is served by the FastAPI Web Bridge.",
   "scripts": {

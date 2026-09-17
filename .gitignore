@@ -16,6 +16,8 @@ firmware/idf/sdkconfig.old
 firmware/.pio/
 .DS_Store
 .env
+.env.*
+!.env.example
 web/node_modules/
 .playwright-cli/
 .vscode/
@@ -25,3 +27,9 @@ firmware/.toolchains/
 firmware/compile_flags.txt
 output/
 artifacts/**/*.log
+artifacts/recovery/
+*fullflash*.bin
+*preflash*.bin
+*.key
+*.p12
+*.pfx

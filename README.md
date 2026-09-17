@@ -1,6 +1,14 @@
 # StackChan LifeOS
 
+[![CI](https://github.com/508284405/stackchan-lifeos/actions/workflows/ci.yml/badge.svg)](https://github.com/508284405/stackchan-lifeos/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 让 M5Stack StackChan K151 在没有持续 LLM 调用时也保持“活着”的本地优先桌面机器人系统。
+
+> [!IMPORTANT]
+> 本项目仍处于开发期，不是经过认证的消费级机器人控制器。接入真实舵机、刷写固件或
+> 运行 HIL 前，请先阅读安全边界与对应验收报告。Web Bridge 默认仅用于回环地址或可信
+> 内网，不能直接暴露到公网。
 
 项目采用双脑架构：
 
@@ -82,7 +90,10 @@ PYTHONPATH=. .venv/bin/python tools/scan_usb_devices.py [--probe] [--json]
 # 用识别到的身份启动真实 Web Bridge + 控制台（默认 http://127.0.0.1:8766）。
 # 此生产 USB 入口固定启用真实摄像头；manual_control_v1 还要求显式提供与当前
 # device/hardware/firmware 匹配的 HIL evidence，否则保持关闭。
-PYTHONPATH=. .venv/bin/python tools/web_bridge_real_server.py --usb-port /dev/cu.usbmodemXXXX
+export LIFEOS_DEVICE_MAC='replace-with-scanned-hardware-id'
+PYTHONPATH=. .venv/bin/python tools/web_bridge_real_server.py \
+  --usb-port /dev/cu.usbmodemXXXX \
+  --hardware-id "$LIFEOS_DEVICE_MAC"
 ```
 
 控制台设备详情提供 `status / pause / resume / home / 远程急停`。预览必须手动开启，
@@ -128,4 +139,16 @@ Pitch 硬限制为 5°–85°。任何安全故障优先于反射、用户、Age
 
 ## 与现有人员追踪项目的关系
 
-`/Users/wangyu/product/stackchan-person-tracker` 保留为 Phase 1 视觉追踪基线。本仓库不覆盖它；待实机验证后，以组件或固定提交迁入 `firmware/components/perception`。
+相邻的 `stackchan-person-tracker` 项目保留为 Phase 1 视觉追踪基线。本仓库不覆盖它；
+待实机验证后，以组件或固定提交迁入 `firmware/components/perception`。
+
+## 参与贡献
+
+欢迎提交问题、设计讨论和 Pull Request。开始前请阅读 [贡献指南](CONTRIBUTING.md)、
+[安全政策](SECURITY.md) 与 [行为准则](CODE_OF_CONDUCT.md)。涉及真实硬件的报告必须明确
+区分 host/fake、真实 provider、媒体和实机证据；请勿在公开 Issue 中附带密钥、完整设备
+标识、未脱敏日志或固件全片备份。
+
+## 许可证
+
+本项目采用 [Apache License 2.0](LICENSE)。第三方依赖仍适用各自的许可证。

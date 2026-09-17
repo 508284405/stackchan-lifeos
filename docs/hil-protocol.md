@@ -14,7 +14,7 @@ to apply only gentle resistance and release it after torque is cut.
 
 ```sh
 python3 tools/hil_usb_runner.py
-python3 tools/hil_usb_runner.py --port /dev/cu.usbmodem101 --timeout 3
+python3 tools/hil_usb_runner.py --port /dev/cu.usbmodemXXXX --timeout 3
 ```
 
 The live path configures 115200 8N1 and first drains the boot banner
@@ -52,8 +52,8 @@ clock-offset/TTL session policy before they are enabled.
 Before using either runner on a real port, verify the USB identity and firmware
 out of band. The runner cannot prove the target's hardware identity from a
 generic serial path alone. A read-only smoke was verified 2026-08-30 on
-`/dev/cu.usbmodem1101`: Espressif USB serial `1C:DB:D4:BA:43:40`,
-ESP32-S3/StackChan CoreS3, MAC `1c:db:d4:ba:43:40`, firmware
+`/dev/cu.usbmodemXXXX`: Espressif USB serial `<device-serial>`,
+ESP32-S3/StackChan CoreS3, MAC `<device-mac>`, firmware
 `lifeos-phase1-0.3.0`, and `lifeos.v1` hello/status all passed with torque off and
 fault false. This is direct protocol evidence only; it does not constitute the
 Web Bridge adapter/API E2E or real-HAL actuator HIL. The full actuator matrix

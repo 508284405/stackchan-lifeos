@@ -2,9 +2,9 @@
   "status": "PASS",
   "mode": "web-bridge-usb-controlled-reconnect",
   "observed_at": "2026-08-30T12:40:58Z",
-  "port": "/dev/cu.usbmodem1101",
+  "port": "/dev/cu.usbmodemXXXX",
   "device_id": "stackchan-01",
-  "hardware_id": "1c:db:d4:ba:43:40",
+  "hardware_id": "<device-mac>",
   "firmware": "lifeos-phase1-0.3.0",
   "disconnect_seconds": 2.0,
   "first_session": {

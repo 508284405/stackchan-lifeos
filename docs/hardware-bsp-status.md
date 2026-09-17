@@ -18,7 +18,7 @@ BLOCKED/NOT TESTED。完整原厂 flash 备份已保存，可按历史验收报�
 | 项目 | 事实 | 来源/证据 |
 | --- | --- | --- |
 | 主控 | M5Stack StackChan / CoreS3 / ESP32-S3 rev 0.2 | esptool chip_id、官方 StackChan 文档 |
-| USB | `/dev/cu.usbmodem101`，VID/PID `0x303A:0x1001` | macOS 枚举、esptool |
+| USB | `/dev/cu.usbmodemXXXX`，VID/PID `0x303A:0x1001` | macOS 枚举、esptool |
 | Flash | 16 MiB | esptool flash_id |
 | I²C | SDA GPIO12，SCL GPIO11，400 kHz bus | 官方 StackChan 源码/配置 |
 | 电机电源 | AW9523 `BUS_EN=1/BOOST_EN=1`，PY32L020 `0x6F`，VM_EN 为 pin 0 | 官方 CoreS3 电源路径；实机读回 |

@@ -39,7 +39,7 @@ BatchTask、SQLite migration/restart recovery、late evidence、审计和最小 
 host-only PASS 而提前启用。
 
 W2 当前实现采用 FastAPI 托管的 React 页面（Vite 构建，源码 `web/src`、提交的构建产物 `web/dist`，界面中文默认可切换英文）：fake/API/WebSocket 的无运动
-监控链路已覆盖；2026-08-30 在 `/dev/cu.usbmodem1101` 完成直接 USB JSONL
+监控链路已覆盖；2026-08-30 在 `/dev/cu.usbmodemXXXX` 完成直接 USB JSONL
 hello/status 只读 smoke，身份、协议和 safe-idle 回包通过，证据见
 `artifacts/web-bridge/usb-readonly-20260830.json`；随后通过标准库 POSIX 串口适配器完成
 一次 Web Bridge service → session → `control.status` → health ACK → disconnect 只读闭环，

@@ -15,13 +15,13 @@ IDF_PATH=/path/to/esp-idf-5.5.4 tools/build_target.sh hil build
 
 ## 真实设备验收矩阵
 
-真实运行必须使用 HIL 镜像、已核验的 `/dev/cu.usbmodem101` 和显式
+真实运行必须使用 HIL 镜像、已核验的 `/dev/cu.usbmodemXXXX` 和显式
 `--allow-hardware`；维护运动/故障命令只有在 `LIFEOS_HIL_TEST_MODE` 下编
 译，并要求 `authorization=maintainer` 与 `test_mode=phase1`。
 
 ```sh
 python3 tools/phase1_hil.py \
-  --port /dev/cu.usbmodem101 \
+  --port /dev/cu.usbmodemXXXX \
   --allow-hardware \
   --require-touch \
   --require-mechanical-stall \
@@ -56,7 +56,7 @@ python3 tools/phase1_hil.py \
 - **PASS（历史 HIL/设备子集）**：真实位置反馈、运动、torque/VM 释放、pause、home、
   反馈冻结故障、硬限位、设备侧 1 ms 急停、clear_fault、断线后不自动恢复，以及
   host/unit/replay/build 验证；这些证据不等于当前 production 的整体出口。
-- **PASS（本轮真实 production 只读）**：已核验 MAC `1c:db:d4:ba:43:40` 后刷入
+- **PASS（本轮真实 production 只读）**：已核验 MAC `<device-mac>` 后刷入
   `lifeos-phase1-0.5.0`；hello/status、`motion_enabled=true`、
   `manual_control_v1` capability、`health.report` 和 `torque_enabled=false` 安全空闲状态通过。
 - **PASS（本轮真实媒体）**：GC0308 QVGA JPEG 经 USB Bridge/MJPEG 到真实浏览器的连续帧

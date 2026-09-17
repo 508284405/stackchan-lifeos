@@ -302,4 +302,4 @@ Real HIL (tools/phase1_hil.py, staged):
 | D pause | pause ACK, paused=true, torque=false, VM off per policy, no further motion |
 | E home | resume+home reaches ≈0°/45° without STALL |
 | F fault matrix | transient failures (no latch), frozen feedback (latch ~0.5 s), hard limit, emergency (<100 ms to torque-free status), link loss, clear_fault, no auto-resume after reconnect |
-| G full runner | `python3 tools/phase1_hil.py --port /dev/cu.usbmodem101 --allow-hardware` PASS, then supervised `--require-touch`, then read-only soak (8 h only on explicit request) |
+| G full runner | `python3 tools/phase1_hil.py --port /dev/cu.usbmodemXXXX --allow-hardware` PASS, then supervised `--require-touch`, then read-only soak (8 h only on explicit request) |

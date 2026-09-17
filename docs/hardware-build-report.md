@@ -49,12 +49,11 @@ IDF_PATH=/path/to/esp-idf-5.5.4 tools/build_target.sh hil build
 
 ## 设备与备份基线
 
-已识别设备为 `/dev/cu.usbmodem1101`，MAC `1c:db:d4:ba:43:40`，ESP32-S3
+已识别设备为 `/dev/cu.usbmodemXXXX`，MAC `<device-mac>`，ESP32-S3
 rev 0.2，16 MiB flash。完整原厂备份：
 
 ```text
-/Users/wangyu/Documents/Codex/2026-08-28/new-chat/work/hardware-backups/
-  stackchan-1cdbd4ba4340-20260829-fullflash.bin
+<secure-backup-dir>/stackchan-device-20260829-fullflash.bin
 SHA-256: 669507af37296a09677b8b6ae831090a6cef357a634815011daf0f8622d11b35
 ```
 
@@ -93,7 +92,7 @@ USB 输出互斥已用同一 ESP-IDF 5.5.4 工具链完成 production/HIL target
 
 - 写入三段生产镜像（bootloader、partition table、application）均返回
   `Hash of data verified`，随后硬复位。
-- `tools/hil_usb_runner.py --port /dev/cu.usbmodem1101 --timeout 5` 返回
+- `tools/hil_usb_runner.py --port /dev/cu.usbmodemXXXX --timeout 5` 返回
   `lifeos-phase1-0.4.6`、`camera_ready=true`、`fault=false`、`safe_idle=true`。
 - `tools/web_bridge_real_server.py --enable-camera-preview` 运行时，HTTP MJPEG 6 秒收
   到 13 个完整 JPEG part；浏览器真实页面显示实时帧。完整记录见

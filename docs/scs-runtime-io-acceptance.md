@@ -1,7 +1,7 @@
 # Phase 1 Executor Closed-Loop Acceptance Report — SCS Runtime I/O Rework
 
-Date: 2026-08-30. Device: StackChan CoreS3, ESP32-S3 rev 0.2, MAC `1c:db:d4:ba:43:40`,
-16 MiB flash, USB-Serial/JTAG, port `/dev/cu.usbmodem101`.
+Date: 2026-08-30. Device: StackChan CoreS3, ESP32-S3 rev 0.2, MAC `<device-mac>`,
+16 MiB flash, USB-Serial/JTAG, port `/dev/cu.usbmodemXXXX`.
 Firmware under test: `lifeos-phase1-0.3.0` (HIL profile, app image
 SHA-256 `99bd2e7463d51af7ae58b520487f2066f975e8850072d31159888ab410133377`).
 
@@ -61,7 +61,7 @@ in order: `24bb00a5…`, `ac26691a…`, `1c944612…`, `fcebfb76…`, `31f5fe70�
 `b9a3cc03…`, `fc49a2d8…`, `7108397e…`, final `99bd2e74…` (full hashes in the
 shell logs; final image recorded above). Recovery backup untouched and
 re-verified before every flash:
-`/Users/wangyu/Documents/Codex/2026-08-28/new-chat/work/hardware-backups/stackchan-1cdbd4ba4340-20260829-fullflash.bin`
+`<secure-backup-dir>/stackchan-device-20260829-fullflash.bin`
 SHA-256 `669507af37296a09677b8b6ae831090a6cef357a634815011daf0f8622d11b35`.
 
 ## Real HIL evidence (artifacts/scs-runtime-io/)
@@ -90,7 +90,7 @@ SHA-256 `669507af37296a09677b8b6ae831090a6cef357a634815011daf0f8622d11b35`.
   latency 202 ms = 2 USB-CDC round trips; home blocked while latched;
   link-loss cancels the generation and cuts power with no auto-resume after
   reconnect (`fault=false torque=false link_lost=false paused=false`).
-- **G full runner**: `python3 tools/phase1_hil.py --port /dev/cu.usbmodem101
+- **G full runner**: `python3 tools/phase1_hil.py --port /dev/cu.usbmodemXXXX
   --allow-hardware --soak-seconds 30 --soak-interval 2` →
   `status: PASS` (`hil-final.json`, 30 s soak, 15 samples, heap/PSRAM flat).
 

@@ -4,36 +4,22 @@
 # compile_commands.json for accurate analysis; query-driver (see
 # .vscode/settings.json) supplies the xtensa toolchain's system includes.
 #
-# CompilationDatabase is an ABSOLUTE path on purpose: clangd resolves relative
-# paths against differing bases across versions/editors, and if the database
-# is not found clangd silently falls back to firmware/compile_flags.txt
-# (host clang + macOS SDK -> "undeclared identifier" floods for every
-# ESP-IDF API). build-hil-16m is the build dir produced by
-# `tools/build_target.sh hil` (see sdkconfig.hil.defaults).
+# The path is relative to this repository so the configuration works for every
+# contributor. build-hil-16m is produced by `tools/build_target.sh hil` (see
+# sdkconfig.hil.defaults). Editors may additionally need to allow the
+# xtensa-esp-elf query driver installed by ESP-IDF.
 If:
   PathMatch:
     - .*firmware/idf/.*
     - .*firmware/src/.*
 CompileFlags:
-  CompilationDatabase: /Users/wangyu/product/stackchan-lifeos/firmware/idf/build-hil-16m
+  CompilationDatabase: firmware/idf/build-hil-16m
   Add:
     - -Wno-unknown-warning-option
-    # Make the analysis target-consistent even when --query-driver is not
-    # passed (Cursor does not always apply clangd.arguments): pin the
-    # xtensa target and the toolchain's libstdc++/newlib include dirs
-    # explicitly (verified via `clangd --check` without --query-driver).
+    # Keep target parsing consistent. Standard-library and newlib include
+    # paths come from compile_commands.json plus clangd's query driver.
     - --target=xtensa-esp-elf
     - -fno-signed-char
-    - -isystem
-    - /Users/wangyu/Documents/Codex/2026-08-28/new-chat/work/idf-tools-5.5.4/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0
-    - -isystem
-    - /Users/wangyu/Documents/Codex/2026-08-28/new-chat/work/idf-tools-5.5.4/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/xtensa-esp-elf/esp32s3
-    - -isystem
-    - /Users/wangyu/Documents/Codex/2026-08-28/new-chat/work/idf-tools-5.5.4/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/xtensa-esp-elf/include/c++/14.2.0/backward
-    - -isystem
-    - /Users/wangyu/Documents/Codex/2026-08-28/new-chat/work/idf-tools-5.5.4/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/lib/gcc/xtensa-esp-elf/14.2.0/include-fixed
-    - -isystem
-    - /Users/wangyu/Documents/Codex/2026-08-28/new-chat/work/idf-tools-5.5.4/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/xtensa-esp-elf/include
   # Xtensa GCC-only flags in the ESP-IDF compile command (a few live in
   # build-hil/toolchain/cxxflags, which clangd expands from the `@file`
   # response file when loading the database). The clang driver rejects them

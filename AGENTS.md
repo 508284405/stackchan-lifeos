@@ -74,7 +74,7 @@ make brain-demo           # .venv/bin/python -m brain.cli simulate --text "..."
   screen changes, not the protocol.
 - Phase 1 exit is BLOCKED/PARTIAL (see `docs/phase1-acceptance.md`); do not claim untested
   capabilities (touch, soak, OTA, 200-device scale) in docs or code comments.
-- Related repo `/Users/wangyu/product/stackchan-person-tracker` is the Phase 1 vision baseline;
+- Related sibling repo `../stackchan-person-tracker` is the Phase 1 vision baseline;
   do not overwrite it from here.
 
 ## Read before touching sensitive areas

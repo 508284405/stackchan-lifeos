@@ -23,7 +23,7 @@
 | 浏览器 Fake E2E | PASS | Playwright 验证五个主页面区域、设备多选、批量 `control.status`、逐设备 `completed`、行为/语音提交、Audit 事件和 System gates；控制台 0 error/0 warning。 |
 | 浏览器真实交互 E2E | NOT TESTED | 未运行 Playwright 或人工浏览器验收。 |
 | 真实 provider | NOT TESTED | 本轮不调用。 |
-| 真实媒体与连续手控 | BLOCKED | USB 枚举身份为 `1C:DB:D4:BA:43:40`；授权串口恢复刷写后 Hash 校验通过，但 `/dev/cu.usbmodem2101` 仍未返回 `hello.device`。 |
+| 真实媒体与连续手控 | BLOCKED | USB 枚举身份已在本地核验并在公开记录中脱敏；授权串口恢复刷写后 Hash 校验通过，但脱敏串口仍未返回 `hello.device`。 |
 | 真实签名升级/断电回滚 | NOT TESTED | 需要可恢复布局、信任配置及独立硬件验收。 |
 
 ## 本轮验证命令

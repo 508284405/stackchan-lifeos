@@ -27,10 +27,9 @@
 
 ## 历史真实设备部署与验收（2026-08-31）
 
-- 设备身份：`/dev/cu.usbmodem1101`，`stackchan-01`，MAC/硬件 ID
-  `1c:db:d4:ba:43:40`，ESP32-S3 rev0.2，16 MiB flash。
-- 全量恢复备份：`/Users/wangyu/Documents/Codex/2026-08-28/new-chat/work/hardware-backups/`
-  `stackchan-1cdbd4ba4340-20260829-fullflash.bin`，SHA-256
+- 设备身份：`/dev/cu.usbmodemXXXX`，`stackchan-01`，MAC/硬件 ID
+  `<device-mac>`，ESP32-S3 rev0.2，16 MiB flash。
+- 全量恢复备份：`<secure-backup-dir>/stackchan-device-20260829-fullflash.bin`，SHA-256
   `669507af37296a09677b8b6ae831090a6cef357a634815011daf0f8622d11b35`。
 - 生产镜像：`lifeos-phase1-0.4.6`，423648 bytes，SHA-256
   `823c8a28c5fc605a60cde936b36a5aec812cbb07e484a946e54511c3cebab173`；写入 bootloader、
@@ -66,7 +65,7 @@
 ## 2026-09-02 连续视频与真实手控复验
 
 - 已按用户授权重新核验身份并刷入 production `lifeos-phase1-0.5.0`；设备为
-  `/dev/cu.usbmodem1101`、`stackchan-01`、MAC `1c:db:d4:ba:43:40`、ESP32-S3 rev0.2、
+  `/dev/cu.usbmodemXXXX`、`stackchan-01`、MAC `<device-mac>`、ESP32-S3 rev0.2、
   16 MiB flash。写入 bootloader、partition table、application 三段均报告
   `Hash of data verified`。
 - 当前 production 镜像 `firmware/idf/build/stackchan_lifeos_phase1.bin` 为 438160 bytes，
