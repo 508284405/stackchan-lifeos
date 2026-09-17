@@ -47,6 +47,7 @@ struct ManualControlResult {
 class ManualControlState final {
  public:
   static constexpr std::uint64_t kMinInputIntervalMs = 100;
+  static constexpr std::uint64_t kMaxVideoCaptureAgeMs = 500;
   static constexpr float kStepDegrees = 2.0F;
 
   ManualControlResult apply(

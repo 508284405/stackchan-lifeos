@@ -42,3 +42,6 @@ build_and_run servo_io \
 build_and_run manual_control \
   firmware/src/runtime/manual_control.cpp \
   firmware/tests/runtime/test_manual_control.cpp
+build_and_run firmware_update \
+  firmware/src/runtime/firmware_update.cpp \
+  firmware/tests/runtime/test_firmware_update.cpp

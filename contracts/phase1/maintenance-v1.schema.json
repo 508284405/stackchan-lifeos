@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stackchan.local/schemas/lifeos.v1/maintenance-v1.json",
+  "title": "LifeOS device-local maintenance payloads",
+  "type": "object",
+  "oneOf": [
+    {"$ref": "#/$defs/prepare"},
+    {"$ref": "#/$defs/execute"},
+    {"$ref": "#/$defs/confirmed"}
+  ],
+  "$defs": {
+    "token": {"type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[A-Za-z0-9_.:-]+$"},
+    "prepare": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "challenge_id", "operation", "valid_for_ms"],
+      "properties": {
+        "action": {"const": "prepare"},
+        "challenge_id": {"$ref": "#/$defs/token"},
+        "operation": {"enum": ["factory_reset", "firmware_update"]},
+        "valid_for_ms": {"type": "integer", "minimum": 1, "maximum": 300000}
+        ,"rollout_id": {"$ref": "#/$defs/token"},
+        "sha256_hex": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      },
+      "allOf": [{
+        "if": {"properties": {"operation": {"const": "firmware_update"}}},
+        "then": {"required": ["rollout_id", "sha256_hex"]},
+        "else": {"not": {"anyOf": [{"required": ["rollout_id"]}, {"required": ["sha256_hex"]}]}}
+      }]
+    },
+    "execute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "challenge_id", "operation"],
+      "properties": {
+        "action": {"const": "execute"},
+        "challenge_id": {"$ref": "#/$defs/token"},
+        "operation": {"const": "factory_reset"}
+      }
+    },
+    "confirmed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["challenge_id", "operation", "result", "valid_for_ms"],
+      "properties": {
+        "challenge_id": {"$ref": "#/$defs/token"},
+        "operation": {"enum": ["factory_reset", "firmware_update"]},
+        "result": {"const": "confirmed"},
+        "valid_for_ms": {"type": "integer", "minimum": 1, "maximum": 300000}
+      }
+    }
+  }
+}

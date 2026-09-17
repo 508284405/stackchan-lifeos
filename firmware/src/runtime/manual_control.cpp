@@ -95,6 +95,16 @@ ManualControlResult ManualControlState::apply(
   }
 
   if (input.action == protocol::ManualAction::Input) {
+    if (!input.has_video_proof || input.video_frame_id.size == 0 ||
+        input.video_capture_ts_ms > now_ms ||
+        now_ms - input.video_capture_ts_ms > kMaxVideoCaptureAgeMs) {
+      result.code = ManualControlResultCode::Expired;
+      result.detail = "manual_video_capture_stale";
+      return result;
+    }
+    const auto video_deadline_ms = input.video_capture_ts_ms + kMaxVideoCaptureAgeMs;
+    const auto input_deadline_ms = now_ms + input.ttl_ms;
+    const auto bounded_deadline_ms = std::min(input_deadline_ms, video_deadline_ms);
     if (!input.has_direction || !std::isfinite(input.yaw) ||
         !std::isfinite(input.pitch) || input.yaw < -1.0F || input.yaw > 1.0F ||
         input.pitch < -1.0F || input.pitch > 1.0F) {
@@ -111,7 +121,7 @@ ManualControlResult ManualControlState::apply(
       // last_input_ms_: the next input at the physical update interval will
       // advance the target normally.
       last_input_seq_ = input.input_seq;
-      deadline_ms_ = now_ms + input.ttl_ms;
+      deadline_ms_ = bounded_deadline_ms;
       result.yaw_deg = target_.yaw_deg;
       result.pitch_deg = target_.pitch_deg;
       result.expires_at_ms = deadline_ms_;
@@ -145,7 +155,7 @@ ManualControlResult ManualControlState::apply(
         FastSafetyLoop::kPitchMin, FastSafetyLoop::kPitchMax);
     result.yaw_deg = target_.yaw_deg;
     result.pitch_deg = target_.pitch_deg;
-    result.expires_at_ms = now_ms + input.ttl_ms;
+    result.expires_at_ms = bounded_deadline_ms;
     last_input_seq_ = input.input_seq;
     last_input_ms_ = now_ms;
     deadline_ms_ = result.expires_at_ms;

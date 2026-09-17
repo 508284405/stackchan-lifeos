@@ -1,0 +1,9 @@
+# Explicit build profile; this file does not migrate or flash any device.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ota.csv"
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK=n
+CONFIG_SECURE_BOOT=n
+CONFIG_SECURE_FLASH_ENC_ENABLED=n
+# P-256 manifest verification authenticates the full image SHA before selecting
+# the new boot slot. No hardware secure-boot/eFuse change is performed.

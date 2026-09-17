@@ -10,7 +10,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import math
 import re
+import secrets
 import threading
 import time
 from dataclasses import dataclass
@@ -21,7 +23,14 @@ MAX_CAMERA_FRAME_BYTES = 64 * 1024
 MAX_CAMERA_CHUNK_BYTES = 5 * 1024
 MAX_CAMERA_CHUNKS = 32
 MAX_CAMERA_FRAME_AGE_S = 3.0
+MAX_MANUAL_CAPTURE_AGE_MS = 500
+# The ESP32 and host both use monotonic millisecond clocks, but they are not
+# frequency locked.  Keep a conservative allowance between round-trip clock
+# samples instead of treating the clocks as identical.
+MAX_CLOCK_DRIFT_PPM = 500
+MAX_CLOCK_SAMPLE_AGE_MS = 5_000
 FRAME_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
+CLOCK_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 
 
 class CameraFrameError(ValueError):
@@ -36,7 +45,10 @@ class CameraFrame:
     width: int
     height: int
     size: int
-    timestamp_ms: int
+    capture_timestamp_ms: int
+    capture_clock_id: str
+    received_at_ms: int
+    token: str
     data: bytes
 
 
@@ -49,9 +61,212 @@ class _Assembly:
     height: int
     size: int
     chunk_count: int
-    timestamp_ms: int
+    capture_timestamp_ms: int
+    capture_clock_id: str
+    received_at_ms: int
     started_at: float
     chunks: dict[int, bytes]
+
+
+@dataclass(frozen=True)
+class ClockEstimate:
+    """A bounded mapping from one device boot clock to the host clock.
+
+    For a device timestamp produced between a host request send and response
+    receive, the true ``host_ms - device_ms`` offset lies inside
+    ``[offset_min_ms, offset_max_ms]``.  Capture age always uses the endpoint
+    that produces the oldest possible frame.
+    """
+
+    clock_id: str
+    offset_min_ms: int
+    offset_max_ms: int
+    sampled_host_ms: int
+
+    def capture_age_upper_ms(self, *, host_now_ms: int, capture_timestamp_ms: int) -> int | None:
+        if host_now_ms < self.sampled_host_ms or capture_timestamp_ms < 0:
+            return None
+        elapsed_ms = host_now_ms - self.sampled_host_ms
+        if elapsed_ms > MAX_CLOCK_SAMPLE_AGE_MS:
+            return None
+        drift_ms = math.ceil(elapsed_ms * MAX_CLOCK_DRIFT_PPM / 1_000_000) + 1
+        oldest_device_now = host_now_ms - (self.offset_min_ms - drift_ms)
+        if capture_timestamp_ms > oldest_device_now:
+            return None
+        return oldest_device_now - capture_timestamp_ms
+
+
+class SessionClockMapper:
+    """Maintain fail-closed round-trip clock bounds for active sessions."""
+
+    def __init__(self) -> None:
+        self._estimates: dict[str, ClockEstimate] = {}
+
+    @staticmethod
+    def validate_clock_id(clock_id: Any) -> str:
+        if not isinstance(clock_id, str) or CLOCK_ID_RE.fullmatch(clock_id) is None:
+            raise CameraFrameError("invalid capture clock id")
+        return clock_id
+
+    def observe_round_trip(
+        self,
+        *,
+        session_id: str,
+        clock_id: str,
+        host_sent_ms: int,
+        host_received_ms: int,
+        device_sent_ms: int,
+    ) -> ClockEstimate:
+        clock_id = self.validate_clock_id(clock_id)
+        values = (host_sent_ms, host_received_ms, device_sent_ms)
+        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in values):
+            raise CameraFrameError("invalid clock sample")
+        if host_received_ms < host_sent_ms:
+            raise CameraFrameError("clock sample host interval is reversed")
+        estimate = ClockEstimate(
+            clock_id=clock_id,
+            offset_min_ms=host_sent_ms - device_sent_ms,
+            offset_max_ms=host_received_ms - device_sent_ms,
+            sampled_host_ms=host_received_ms,
+        )
+        self._estimates[session_id] = estimate
+        return estimate
+
+    def capture_age_upper_ms(
+        self,
+        *,
+        session_id: str,
+        clock_id: str,
+        capture_timestamp_ms: int,
+        host_now_ms: int,
+    ) -> int | None:
+        estimate = self._estimates.get(session_id)
+        if estimate is None or estimate.clock_id != clock_id:
+            return None
+        return estimate.capture_age_upper_ms(
+            host_now_ms=host_now_ms,
+            capture_timestamp_ms=capture_timestamp_ms,
+        )
+
+    def invalidate_session(self, session_id: str) -> None:
+        self._estimates.pop(session_id, None)
+
+
+@dataclass
+class CameraViewer:
+    viewer_id: str
+    device_id: str
+    session_id: str
+    opened_at_ms: int
+    last_seen_at_ms: int
+    delivered_frame_id: str | None = None
+    delivered_token: str | None = None
+    delivered_capture_timestamp_ms: int | None = None
+    delivered_capture_clock_id: str | None = None
+    displayed_frame_id: str | None = None
+    displayed_token: str | None = None
+    displayed_capture_timestamp_ms: int | None = None
+    displayed_capture_clock_id: str | None = None
+    displayed_at_ms: int | None = None
+    visible: bool = False
+
+
+class CameraViewerRegistry:
+    """Ephemeral viewer/display acknowledgements bound to a control socket."""
+
+    def __init__(self) -> None:
+        self._viewers: dict[str, CameraViewer] = {}
+
+    def open(
+        self,
+        *,
+        viewer_id: str,
+        device_id: str,
+        session_id: str,
+        now_ms: int,
+    ) -> CameraViewer:
+        if not isinstance(viewer_id, str) or FRAME_ID_RE.fullmatch(viewer_id) is None:
+            raise CameraFrameError("invalid viewer id")
+        current = self._viewers.get(viewer_id)
+        if current is not None and (
+            current.device_id != device_id or current.session_id != session_id
+        ):
+            raise CameraFrameError("viewer is already bound to another device session")
+        viewer = current or CameraViewer(
+            viewer_id=viewer_id,
+            device_id=device_id,
+            session_id=session_id,
+            opened_at_ms=now_ms,
+            last_seen_at_ms=now_ms,
+        )
+        viewer.last_seen_at_ms = now_ms
+        self._viewers[viewer_id] = viewer
+        return viewer
+
+    def close(self, viewer_id: str) -> CameraViewer | None:
+        return self._viewers.pop(viewer_id, None)
+
+    def invalidate_session(self, session_id: str) -> list[CameraViewer]:
+        removed = [viewer for viewer in self._viewers.values() if viewer.session_id == session_id]
+        for viewer in removed:
+            self._viewers.pop(viewer.viewer_id, None)
+        return removed
+
+    def get(self, viewer_id: str) -> CameraViewer | None:
+        return self._viewers.get(viewer_id)
+
+    def list(self) -> list[CameraViewer]:
+        return list(self._viewers.values())
+
+    def deliver(self, viewer_id: str, frame: CameraFrame, *, now_ms: int) -> CameraViewer:
+        viewer = self._viewers.get(viewer_id)
+        if viewer is None or viewer.device_id != frame.device_id or viewer.session_id != frame.session_id:
+            raise CameraFrameError("viewer is not bound to this camera session")
+        viewer.last_seen_at_ms = now_ms
+        viewer.delivered_frame_id = frame.frame_id
+        viewer.delivered_token = frame.token
+        viewer.delivered_capture_timestamp_ms = frame.capture_timestamp_ms
+        viewer.delivered_capture_clock_id = frame.capture_clock_id
+        return viewer
+
+    def acknowledge_display(
+        self,
+        *,
+        viewer_id: str,
+        device_id: str,
+        session_id: str,
+        frame_id: str,
+        token: str,
+        visible: bool,
+        now_ms: int,
+    ) -> CameraViewer:
+        viewer = self._viewers.get(viewer_id)
+        if viewer is None or viewer.device_id != device_id or viewer.session_id != session_id:
+            raise CameraFrameError("viewer is not bound to this camera session")
+        if visible is not True:
+            raise CameraFrameError("viewer is not visible")
+        if (
+            viewer.delivered_frame_id != frame_id
+            or viewer.delivered_token != token
+        ):
+            raise CameraFrameError("display acknowledgement token does not match the served frame")
+        if viewer.displayed_frame_id == frame_id and viewer.displayed_token == token:
+            raise CameraFrameError("duplicate frame cannot refresh display freshness")
+        viewer.last_seen_at_ms = now_ms
+        viewer.displayed_frame_id = frame_id
+        viewer.displayed_token = token
+        viewer.displayed_capture_timestamp_ms = viewer.delivered_capture_timestamp_ms
+        viewer.displayed_capture_clock_id = viewer.delivered_capture_clock_id
+        viewer.displayed_at_ms = now_ms
+        viewer.visible = True
+        return viewer
+
+    def active_for_device(self, device_id: str, session_id: str) -> list[CameraViewer]:
+        return [
+            viewer
+            for viewer in self._viewers.values()
+            if viewer.device_id == device_id and viewer.session_id == session_id
+        ]
 
 
 class CameraFrameStore:
@@ -90,7 +305,10 @@ class CameraFrameStore:
         height: int,
         size: int,
         chunk_count: int,
-        timestamp_ms: int,
+        capture_timestamp_ms: int | None = None,
+        capture_clock_id: str = "legacy",
+        received_at_ms: int | None = None,
+        timestamp_ms: int | None = None,
     ) -> None:
         frame_id = self._check_frame_id(frame_id)
         if width != 320 or height != 240:
@@ -103,8 +321,20 @@ class CameraFrameStore:
             or not 1 <= chunk_count <= self.max_chunks
         ):
             raise CameraFrameError("camera chunk count is outside the bounded limit")
-        if not isinstance(timestamp_ms, int) or isinstance(timestamp_ms, bool) or timestamp_ms < 0:
-            raise CameraFrameError("invalid camera timestamp")
+        if capture_timestamp_ms is None:
+            capture_timestamp_ms = timestamp_ms
+        if received_at_ms is None:
+            received_at_ms = capture_timestamp_ms
+        capture_clock_id = SessionClockMapper.validate_clock_id(capture_clock_id)
+        if (
+            not isinstance(capture_timestamp_ms, int)
+            or isinstance(capture_timestamp_ms, bool)
+            or capture_timestamp_ms < 0
+            or not isinstance(received_at_ms, int)
+            or isinstance(received_at_ms, bool)
+            or received_at_ms < 0
+        ):
+            raise CameraFrameError("invalid camera capture timestamp")
         key = (device_id, session_id, frame_id)
         now = time.monotonic()
         with self._lock:
@@ -128,7 +358,9 @@ class CameraFrameStore:
                 height=height,
                 size=size,
                 chunk_count=chunk_count,
-                timestamp_ms=timestamp_ms,
+                capture_timestamp_ms=capture_timestamp_ms,
+                capture_clock_id=capture_clock_id,
+                received_at_ms=received_at_ms,
                 started_at=now,
                 chunks={},
             )
@@ -200,7 +432,10 @@ class CameraFrameStore:
                 width=assembly.width,
                 height=assembly.height,
                 size=len(data),
-                timestamp_ms=assembly.timestamp_ms,
+                capture_timestamp_ms=assembly.capture_timestamp_ms,
+                capture_clock_id=assembly.capture_clock_id,
+                received_at_ms=assembly.received_at_ms,
+                token=secrets.token_urlsafe(18),
                 data=data,
             )
         with self._condition:

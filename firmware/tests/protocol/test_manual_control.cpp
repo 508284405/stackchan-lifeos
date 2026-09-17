@@ -31,7 +31,8 @@ int main() {
   const char* input = frame(
       "manual-1", 2,
       "{\"lease_id\":\"lease-1\",\"input_seq\":1,\"action\":\"input\","
-      "\"direction\":{\"yaw\":0.75,\"pitch\":-0.2},\"ttl_ms\":400}");
+      "\"direction\":{\"yaw\":0.75,\"pitch\":-0.2},\"ttl_ms\":400,"
+      "\"video_frame_id\":\"frame-1\",\"video_capture_ts_ms\":9}");
   auto parsed = parse(input);
   assert(parsed);
   ManualControlPayload payload;
@@ -51,7 +52,8 @@ int main() {
   const char* out_of_range = frame(
       "manual-bad-1", 4,
       "{\"lease_id\":\"lease-1\",\"input_seq\":3,\"action\":\"input\","
-      "\"direction\":{\"yaw\":1.1,\"pitch\":0},\"ttl_ms\":400}");
+      "\"direction\":{\"yaw\":1.1,\"pitch\":0},\"ttl_ms\":400,"
+      "\"video_frame_id\":\"frame-1\",\"video_capture_ts_ms\":9}");
   parsed = parse(out_of_range);
   assert(parse_manual_control_payload(parsed.envelope, payload, 12) == ParseError::InvalidPayload);
   assert(!gateway.ingest(out_of_range, 12).accepted);
@@ -66,7 +68,8 @@ int main() {
   const char* raw_field = frame(
       "manual-bad-3", 6,
       "{\"lease_id\":\"lease-1\",\"input_seq\":5,\"action\":\"input\","
-      "\"direction\":{\"yaw\":0,\"pitch\":0},\"ttl_ms\":400,\"yaw_deg\":10}");
+      "\"direction\":{\"yaw\":0,\"pitch\":0},\"ttl_ms\":400,"
+      "\"video_frame_id\":\"frame-1\",\"video_capture_ts_ms\":9,\"yaw_deg\":10}");
   parsed = parse(raw_field);
   assert(parse_manual_control_payload(parsed.envelope, payload, 14) == ParseError::InvalidPayload);
   assert(!gateway.ingest(raw_field, 14).accepted);

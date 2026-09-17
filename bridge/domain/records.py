@@ -374,24 +374,30 @@ class MaintenanceTask:
     operation: str
     session_id: str
     challenge_id: str
+    context: dict[str, Any] = field(default_factory=dict)
     state: MaintenanceTaskState = MaintenanceTaskState.AWAITING_CONFIRMATION
     consequence: str = "may change device state"
     error: dict[str, Any] | None = None
+    confirmation_expires_at: datetime | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
         return {"task_id": self.task_id, "device_id": self.device_id, "operation": self.operation,
                 "session_id": self.session_id, "challenge_id": self.challenge_id,
+                "context": self.context,
                 "state": self.state.value, "consequence": self.consequence, "error": self.error,
+                "confirmation_expires_at": _time_value(self.confirmation_expires_at),
                 "created_at": _time_value(self.created_at), "updated_at": _time_value(self.updated_at)}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "MaintenanceTask":
         return cls(task_id=data["task_id"], device_id=data["device_id"], operation=data["operation"],
                    session_id=data["session_id"], challenge_id=data["challenge_id"],
+                   context=dict(data.get("context", {})),
                    state=MaintenanceTaskState(data.get("state", "awaiting_confirmation")),
                    consequence=data.get("consequence", "may change device state"), error=data.get("error"),
+                   confirmation_expires_at=_parse_time(data.get("confirmation_expires_at")),
                    created_at=_parse_time(data.get("created_at")) or utc_now(),
                    updated_at=_parse_time(data.get("updated_at")) or utc_now())
 
@@ -404,6 +410,16 @@ class RolloutTask:
     state: RolloutTaskState = RolloutTaskState.PENDING
     consequence: str = "may replace device firmware"
     preconditions: dict[str, Any] = field(default_factory=dict)
+    target_version: str | None = None
+    previous_version: str | None = None
+    expected_sha256: str | None = None
+    previous_sha256: str | None = None
+    size_bytes: int | None = None
+    bytes_sent: int = 0
+    local_boot_state: str | None = None
+    host_confirmed: bool = False
+    result: dict[str, Any] | None = None
+    confirmation_task_id: str | None = None
     error: dict[str, Any] | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
@@ -411,7 +427,13 @@ class RolloutTask:
     def to_dict(self) -> dict[str, Any]:
         return {"task_id": self.task_id, "device_id": self.device_id, "image_ref": self.image_ref,
                 "state": self.state.value, "consequence": self.consequence,
-                "preconditions": self.preconditions, "error": self.error,
+                "preconditions": self.preconditions, "target_version": self.target_version,
+                "previous_version": self.previous_version, "expected_sha256": self.expected_sha256,
+                "previous_sha256": self.previous_sha256,
+                "size_bytes": self.size_bytes, "bytes_sent": self.bytes_sent,
+                "local_boot_state": self.local_boot_state, "host_confirmed": self.host_confirmed,
+                "result": self.result, "error": self.error,
+                "confirmation_task_id": self.confirmation_task_id,
                 "created_at": _time_value(self.created_at), "updated_at": _time_value(self.updated_at)}
 
     @classmethod
@@ -419,6 +441,13 @@ class RolloutTask:
         return cls(task_id=data["task_id"], device_id=data["device_id"], image_ref=data["image_ref"],
                    state=RolloutTaskState(data.get("state", "pending")),
                    consequence=data.get("consequence", "may replace device firmware"),
-                   preconditions=dict(data.get("preconditions", {})), error=data.get("error"),
+                   preconditions=dict(data.get("preconditions", {})),
+                   target_version=data.get("target_version"), previous_version=data.get("previous_version"),
+                   expected_sha256=data.get("expected_sha256"), size_bytes=data.get("size_bytes"),
+                   previous_sha256=data.get("previous_sha256"),
+                   bytes_sent=int(data.get("bytes_sent", 0)), local_boot_state=data.get("local_boot_state"),
+                   host_confirmed=bool(data.get("host_confirmed", False)), result=data.get("result"),
+                   confirmation_task_id=data.get("confirmation_task_id"),
+                   error=data.get("error"),
                    created_at=_parse_time(data.get("created_at")) or utc_now(),
                    updated_at=_parse_time(data.get("updated_at")) or utc_now())

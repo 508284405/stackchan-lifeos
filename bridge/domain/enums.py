@@ -52,6 +52,7 @@ class BatchState(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
+    PAUSED = "paused"
 
 
 class BatchTargetState(str, Enum):
@@ -63,6 +64,10 @@ class BatchTargetState(str, Enum):
     TIMEOUT = "timeout"
     CANCELLED = "cancelled"
     EXPIRED = "expired"
+    RUNNING = "running"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    FAILED = "failed"
+    RECOVERED = "recovered"
 
 
 class LeaseState(str, Enum):
@@ -108,7 +113,9 @@ class RolloutTaskState(str, Enum):
     PREFLIGHT = "preflight"
     READY = "ready"
     RUNNING = "running"
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
     COMPLETED = "completed"
+    RECOVERED = "recovered"
     REJECTED = "rejected"
     FAILED = "failed"
     EXPIRED = "expired"

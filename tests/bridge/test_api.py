@@ -79,7 +79,6 @@ def test_api_rejects_client_priority_and_unavailable_features():
     bridge.discover(transport.candidate())
     device = bridge.claim(transport.candidate().candidate_id)
     asyncio.run(bridge.connect(device.device_id, transport))
-
     with TestClient(create_app(bridge)) as client:
         unknown = client.post(
             f"/api/v1/devices/{device.device_id}/commands",
@@ -102,7 +101,6 @@ def test_generic_manual_control_endpoint_never_bypasses_the_control_lease():
     bridge.discover(transport.candidate())
     device = bridge.claim(transport.candidate().candidate_id)
     asyncio.run(bridge.connect(device.device_id, transport))
-
     with TestClient(create_app(bridge)) as client:
         response = client.post(
             f"/api/v1/devices/{device.device_id}/commands",
@@ -136,7 +134,7 @@ def test_w4_api_routes_keep_maintenance_and_rollout_execution_gated():
     with TestClient(create_app(bridge)) as client:
         prepared = client.post(
             f"/api/v1/devices/{device.device_id}/maintenance/prepare",
-            json={"operation": "restart"},
+            json={"operation": "factory_reset"},
         )
         execute_before_confirmation = client.post(
             f"/api/v1/maintenance-tasks/{prepared.json()['task_id']}/execute"
@@ -157,7 +155,12 @@ def test_w4_api_routes_keep_maintenance_and_rollout_execution_gated():
     assert "nonce" not in diagnostics.text
     assert rollout.status_code == 202
     assert invalid_preflight.status_code == 422
-    assert not any(frame.get("kind") == "command" for frame in transport.sent_frames)
+    actions = [
+        frame.get("payload", {}).get("action")
+        for frame in transport.sent_frames
+        if frame.get("type") == "command.maintenance"
+    ]
+    assert actions == ["prepare"]
 
 
 def test_api_requires_explicit_trusted_lan_opt_in_for_non_loopback():
@@ -325,7 +328,23 @@ def test_real_manual_preview_gate_preserves_camera_during_lease_acquisition():
         )
         assert started.status_code == 202
         with client.websocket_connect("/api/v1/control") as websocket:
-            websocket.receive_json()
+            connected = websocket.receive_json()
+            connection_id = connected["connection_id"]
+            websocket.send_json({"type": "viewer.open", "device_id": device.device_id})
+            assert websocket.receive_json()["type"] == "viewer.opened"
+            frame = client.get(
+                f"/api/v1/devices/{device.device_id}/camera/frame",
+                params={"viewer_id": connection_id},
+            )
+            assert frame.status_code == 200
+            websocket.send_json({
+                "type": "video.displayed",
+                "device_id": device.device_id,
+                "frame_id": frame.headers["X-LifeOS-Frame-Id"],
+                "token": frame.headers["X-LifeOS-Frame-Token"],
+                "visible": True,
+            })
+            assert websocket.receive_json()["type"] == "video.display.acknowledged"
             websocket.send_json({"type": "lease.acquire", "device_id": device.device_id})
             acquired = websocket.receive_json()
 
@@ -338,6 +357,51 @@ def test_real_manual_preview_gate_preserves_camera_during_lease_acquisition():
         if frame.get("type") == "command.camera_preview"
     ]
     assert actions == ["start"]
+
+
+def test_manual_preview_rejects_a_displayed_frame_older_than_500ms():
+    bridge = Bridge(feature_gates={
+        "manual_control_v1": True,
+        "media": True,
+        "manual_camera_preview": True,
+    })
+    transport = FakeTransport(
+        capabilities={"manual_control_v1", "status", "motion", "safety", "camera"}
+    )
+    transport.camera_capture_age_ms = 750
+    bridge.discover(transport.candidate())
+    device = bridge.claim(transport.candidate().candidate_id)
+    asyncio.run(bridge.connect(device.device_id, transport))
+    # Advance the device clock without a new clock sample so the captured
+    # frame cannot be proven to be within the 500 ms control bound.
+    transport._device_clock_ms = 1_000
+
+    with TestClient(create_app(bridge)) as client:
+        assert client.post(
+            f"/api/v1/devices/{device.device_id}/camera-preview",
+            json={"action": "start"},
+        ).status_code == 202
+        with client.websocket_connect("/api/v1/control") as websocket:
+            connection_id = websocket.receive_json()["connection_id"]
+            websocket.send_json({"type": "viewer.open", "device_id": device.device_id})
+            assert websocket.receive_json()["type"] == "viewer.opened"
+            frame = client.get(
+                f"/api/v1/devices/{device.device_id}/camera/frame",
+                params={"viewer_id": connection_id},
+            )
+            websocket.send_json({
+                "type": "video.displayed",
+                "device_id": device.device_id,
+                "frame_id": frame.headers["X-LifeOS-Frame-Id"],
+                "token": frame.headers["X-LifeOS-Frame-Token"],
+                "visible": True,
+            })
+            rejected = websocket.receive_json()
+
+    assert rejected["type"] == "control.error"
+    assert rejected["code"] == "rejected"
+    assert "capture age" in rejected["reason"]
+    assert bridge.leases.list() == []
 
 
 def test_control_websocket_stops_the_lease_when_a_manual_ack_is_missing():
@@ -433,7 +497,7 @@ def test_control_websocket_reports_feature_gate_without_sending_a_wire_command()
     assert not any(frame.get("kind") == "command" for frame in transport.sent_frames)
 
 
-def test_control_websocket_close_preempts_active_lease():
+def test_control_websocket_close_releases_active_lease():
     bridge = Bridge(feature_gates={"manual_control_v1": True})
     transport = FakeTransport(capabilities={"manual_control_v1"})
     bridge.discover(transport.candidate())
@@ -446,7 +510,9 @@ def test_control_websocket_close_preempts_active_lease():
             websocket.send_json({"type": "lease.acquire", "device_id": device.device_id})
             lease = websocket.receive_json()["lease"]
 
-    assert bridge.get_control_lease(lease["lease_id"]).state is LeaseState.PREEMPTED
+    released = bridge.get_control_lease(lease["lease_id"])
+    assert released.state is LeaseState.RELEASED
+    assert released.reason == "websocket_closed"
 
 
 def test_semantic_behavior_and_speech_commands_are_gated_at_api_boundary():

@@ -9,17 +9,25 @@
 
 #include "driver/usb_serial_jtag.h"
 #include "driver/usb_serial_jtag_vfs.h"
+#include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_mac.h"
+#include "esp_random.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 #include "lifeos/hal/stackchan/stackchan.hpp"
 #include "lifeos/protocol/protocol.hpp"
 #include "lifeos/runtime/manual_control.hpp"
+#include "lifeos/runtime/firmware_update.hpp"
 #include "lifeos/runtime/runtime.hpp"
 #include "lifeos/runtime/servo_io.hpp"
+#include "firmware_update_idf.hpp"
+#include "mbedtls/base64.h"
 
 #ifndef LIFEOS_MANUAL_CONTROL_V1
 #define LIFEOS_MANUAL_CONTROL_V1 0
@@ -85,6 +93,15 @@ std::uint64_t output_sequence = 0;                       // 出站序号（单�
 StaticSemaphore_t output_mutex_storage{};
 SemaphoreHandle_t output_mutex{nullptr};
 std::uint64_t camera_frame_sequence = 0;
+std::uint64_t maintenance_confirmation_sequence = 0;
+char device_clock_id[32]{};
+bool device_user_store_ready = false;
+char hardware_id_text[24]{};
+char firmware_boot_state[24]{"legacy"};
+char firmware_image_sha256[65]{};
+char active_firmware_rollout_id[97]{};
+lifeos::idf::EspFirmwareUpdateBackend firmware_update_backend{};
+lifeos::runtime::FirmwareUpdateCore firmware_update{firmware_update_backend};
 StackChanBoard board{};                                  // 板级硬件封装（舵机/扩展板/IMU/触摸/显示…）
 
 // 主机停止读取且 TX 环写满时，向 USB-Serial/JTAG vfs 写入会阻塞，
@@ -93,6 +110,7 @@ StackChanBoard board{};                                  // 板级硬件封装�
 // 否则丢弃；协议 ACK 从不被门控，因为它们只出现在活跃的主机交互中。
 constexpr std::uint64_t kConsoleIdleDropMs = 4000;
 std::atomic<std::uint64_t> last_console_rx_ms{0};
+std::atomic<bool> firmware_abort_requested{false};
 
 // 当前单调时间（毫秒），作为全固件统一时间基准
 std::uint64_t now_ms() {
@@ -203,9 +221,7 @@ bool array_contains_text(std::string_view payload, std::string_view name,
              std::string_view::npos;
 }
 
-// ---- 以下仅 HIL 测试模式编译：简易 JSON 字段解析（维护命令鉴权/参数）----
-#if CONFIG_LIFEOS_HIL_TEST_MODE
-// 精确匹配 "name":"expected"
+// Bounded JSON field helpers for registered maintenance/OTA commands.
 bool text_field(std::string_view payload, std::string_view name,
                 std::string_view expected) {
   char needle[96]{};
@@ -216,8 +232,108 @@ bool text_field(std::string_view payload, std::string_view name,
                            std::string_view::npos;
 }
 
+bool copy_token_field(std::string_view payload, std::string_view name,
+                      char* output, std::size_t capacity) {
+  if (output == nullptr || capacity < 2) return false;
+  char prefix[96]{};
+  const int prefix_size = std::snprintf(prefix, sizeof(prefix), "\"%.*s\":\"",
+                                        static_cast<int>(name.size()), name.data());
+  if (prefix_size <= 0 || static_cast<std::size_t>(prefix_size) >= sizeof(prefix)) return false;
+  const auto start = payload.find(std::string_view(prefix, static_cast<std::size_t>(prefix_size)));
+  if (start == std::string_view::npos) return false;
+  const auto value_start = start + static_cast<std::size_t>(prefix_size);
+  const auto value_end = payload.find('"', value_start);
+  if (value_end == std::string_view::npos || value_end == value_start ||
+      value_end - value_start >= capacity) {
+    return false;
+  }
+  for (std::size_t index = value_start; index < value_end; ++index) {
+    const char ch = payload[index];
+    const bool allowed = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                         (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' ||
+                         ch == '.' || ch == ':';
+    if (!allowed) return false;
+  }
+  const auto size = value_end - value_start;
+  std::memcpy(output, payload.data() + value_start, size);
+  output[size] = '\0';
+  return true;
+}
+
+bool copy_string_field(std::string_view payload, std::string_view name,
+                       char* output, std::size_t capacity) {
+  if (output == nullptr || capacity < 2) return false;
+  char prefix[96]{};
+  const int prefix_size = std::snprintf(prefix, sizeof(prefix), "\"%.*s\":\"",
+                                        static_cast<int>(name.size()), name.data());
+  if (prefix_size <= 0 || static_cast<std::size_t>(prefix_size) >= sizeof(prefix)) return false;
+  const auto start = payload.find(std::string_view(prefix, static_cast<std::size_t>(prefix_size)));
+  if (start == std::string_view::npos) return false;
+  const auto value_start = start + static_cast<std::size_t>(prefix_size);
+  const auto value_end = payload.find('"', value_start);
+  if (value_end == std::string_view::npos || value_end == value_start ||
+      value_end - value_start >= capacity) return false;
+  for (std::size_t index = value_start; index < value_end; ++index) {
+    const unsigned char ch = static_cast<unsigned char>(payload[index]);
+    if (ch < 0x20 || ch == '\\') return false;
+  }
+  const auto size = value_end - value_start;
+  std::memcpy(output, payload.data() + value_start, size);
+  output[size] = '\0';
+  return true;
+}
+
+bool unsigned_field(std::string_view payload, std::string_view name,
+                    std::uint64_t& output) {
+  char prefix[96]{};
+  const int prefix_size = std::snprintf(prefix, sizeof(prefix), "\"%.*s\":",
+                                        static_cast<int>(name.size()), name.data());
+  if (prefix_size <= 0 || static_cast<std::size_t>(prefix_size) >= sizeof(prefix)) return false;
+  const auto start = payload.find(std::string_view(prefix, static_cast<std::size_t>(prefix_size)));
+  if (start == std::string_view::npos) return false;
+  std::size_t cursor = start + static_cast<std::size_t>(prefix_size);
+  if (cursor >= payload.size() || payload[cursor] < '0' || payload[cursor] > '9') return false;
+  std::uint64_t value = 0;
+  while (cursor < payload.size() && payload[cursor] >= '0' && payload[cursor] <= '9') {
+    const auto digit = static_cast<std::uint64_t>(payload[cursor] - '0');
+    if (value > (UINT64_MAX - digit) / 10) return false;
+    value = value * 10 + digit;
+    ++cursor;
+  }
+  output = value;
+  return true;
+}
+
+lifeos::protocol::ErrorCode firmware_error_code(
+    lifeos::runtime::FirmwareUpdateError error) {
+  using Error = lifeos::runtime::FirmwareUpdateError;
+  using Code = lifeos::protocol::ErrorCode;
+  switch (error) {
+    case Error::None: return Code::Internal;
+    case Error::UnsafeState: return Code::SafetyBlocked;
+    case Error::Busy: return Code::Busy;
+    case Error::InvalidSignature:
+    case Error::TrustUnavailable:
+    case Error::HardwareMismatch: return Code::Unauthorized;
+    case Error::UnsupportedLayout: return Code::Unsupported;
+    case Error::OffsetMismatch: return Code::RateLimited;
+    case Error::InvalidManifest:
+    case Error::InvalidChunk:
+    case Error::IncompleteImage:
+    case Error::VersionMismatch: return Code::InvalidSchema;
+    case Error::RollbackUnavailable:
+    case Error::NotReceiving:
+    case Error::HashMismatch:
+    case Error::StorageFailure:
+    case Error::InvalidImage:
+    case Error::BootSelectionFailure:
+    case Error::Aborted: return Code::Internal;
+  }
+  return Code::Internal;
+}
+
 // 提取 "name": 之后的数字串并校验为有限值
-bool number_field(std::string_view payload, std::string_view name, float& output) {
+[[maybe_unused]] bool number_field(std::string_view payload, std::string_view name, float& output) {
   char needle[48]{};
   const int written = std::snprintf(needle, sizeof(needle), "\"%.*s\":",
                                     static_cast<int>(name.size()), name.data());
@@ -238,7 +354,6 @@ bool number_field(std::string_view payload, std::string_view name, float& output
   output = std::strtof(number, &end);
   return end == number + size && std::isfinite(output);
 }
-#endif
 
 // 舵机 I/O 核心日志回调 -> 复用 hil_log 门控
 void servo_io_log_sink(void* /*context*/, const char* line) {
@@ -308,6 +423,12 @@ class TargetRuntime final {
     std::uint64_t command_applied_ms{0};
   };
 
+  struct MaintenanceConfirmation {
+    char challenge_id[97]{};
+    char operation[32]{};
+    std::uint32_t valid_for_ms{0};
+  };
+
   explicit TargetRuntime(StackChanBoard& board)
       : board_(board), link_(board), graph_executor_(graph_) {}
 
@@ -332,6 +453,35 @@ class TargetRuntime final {
     position_ = board_.servo().cached_position();
     if (!graph_ready) fault_ = true;
     portEXIT_CRITICAL(&guard_);
+  }
+
+  bool take_maintenance_confirmation(MaintenanceConfirmation& output,
+                                     std::uint64_t current_ms) {
+    portENTER_CRITICAL(&guard_);
+    const bool ready = maintenance_confirmation_event_pending_ &&
+                       maintenance_confirmed_ &&
+                       current_ms < maintenance_expires_at_ms_;
+    if (ready) {
+      std::snprintf(output.challenge_id, sizeof(output.challenge_id), "%s",
+                    maintenance_challenge_id_);
+      std::snprintf(output.operation, sizeof(output.operation), "%s",
+                    maintenance_operation_);
+      const auto remaining = maintenance_expires_at_ms_ - current_ms;
+      output.valid_for_ms = static_cast<std::uint32_t>(
+          std::min<std::uint64_t>(remaining, 300000));
+      maintenance_confirmation_event_pending_ = false;
+    }
+    portEXIT_CRITICAL(&guard_);
+    return ready;
+  }
+
+  void require_explicit_resume() {
+    core_.cancel_all();
+    portENTER_CRITICAL(&guard_);
+    manual_control_.reset();
+    paused_ = true;
+    portEXIT_CRITICAL(&guard_);
+    cut_vm_power("boot_resume_required");
   }
 
   // 舵机 I/O 任务入口：先挂日志回调，再按"运动就绪 + VM 使能"初始化核心
@@ -364,8 +514,18 @@ class TargetRuntime final {
         const bool media_enabled = bool_field(envelope.payload.view(), "media_enabled", true);
         const bool manual_enabled =
             array_contains_text(envelope.payload.view(), "capabilities", "manual_control_v1");
+        firmware_update.abort();
+        active_firmware_rollout_id[0] = '\0';
         portENTER_CRITICAL(&guard_);
         manual_control_.reset();
+        maintenance_challenge_id_[0] = '\0';
+        maintenance_operation_[0] = '\0';
+        maintenance_rollout_id_[0] = '\0';
+        maintenance_sha256_[0] = '\0';
+        maintenance_expires_at_ms_ = 0;
+        maintenance_confirmed_ = false;
+        maintenance_used_ = false;
+        maintenance_confirmation_event_pending_ = false;
         manual_control_enabled_ = manual_enabled;
         media_enabled_ = media_enabled;
         if (!media_enabled_) camera_preview_enabled_ = false;
@@ -576,6 +736,216 @@ class TargetRuntime final {
       return {true, lifeos::protocol::ErrorCode::Internal,
               preview.action.view() == "start" ? "camera_preview_start" : "camera_preview_stop"};
     }
+    if (type == "command.firmware_update") {
+      char rollout_id[97]{};
+      if (!copy_token_field(payload, "rollout_id", rollout_id, sizeof(rollout_id))) {
+        return {false, lifeos::protocol::ErrorCode::InvalidSchema,
+                "firmware_rollout_id_invalid"};
+      }
+      if (text_field(payload, "action", "begin")) {
+        lifeos::runtime::FirmwareUpdateManifest manifest;
+        std::uint64_t size_bytes = 0;
+        std::uint64_t secure_version = 0;
+        char signature_b64[128]{};
+        char confirmation_challenge_id[97]{};
+        if (!copy_token_field(payload, "image_ref", manifest.image_ref,
+                              sizeof(manifest.image_ref)) ||
+            !copy_token_field(payload, "version", manifest.version,
+                              sizeof(manifest.version)) ||
+            !copy_token_field(payload, "hardware_id", manifest.hardware_id,
+                              sizeof(manifest.hardware_id)) ||
+            !copy_token_field(payload, "protocol_version", manifest.protocol_version,
+                              sizeof(manifest.protocol_version)) ||
+            !copy_token_field(payload, "partition_layout", manifest.partition_layout,
+                              sizeof(manifest.partition_layout)) ||
+            !copy_token_field(payload, "sha256_hex", manifest.sha256_hex,
+                              sizeof(manifest.sha256_hex)) ||
+            !copy_token_field(payload, "signature_algorithm", manifest.signature_algorithm,
+                              sizeof(manifest.signature_algorithm)) ||
+            !copy_string_field(payload, "signature_der_b64", signature_b64,
+                               sizeof(signature_b64)) ||
+            !copy_token_field(payload, "confirmation_challenge_id",
+                              confirmation_challenge_id,
+                              sizeof(confirmation_challenge_id)) ||
+            !unsigned_field(payload, "size_bytes", size_bytes) ||
+            !unsigned_field(payload, "secure_version", secure_version) ||
+            size_bytes > UINT32_MAX || secure_version > UINT32_MAX) {
+          return {false, lifeos::protocol::ErrorCode::InvalidSchema,
+                  "firmware_manifest_invalid"};
+        }
+        manifest.size_bytes = static_cast<std::uint32_t>(size_bytes);
+        manifest.secure_version = static_cast<std::uint32_t>(secure_version);
+        std::size_t decoded_size = 0;
+        if (mbedtls_base64_decode(
+                manifest.signature_der, sizeof(manifest.signature_der),
+                &decoded_size,
+                reinterpret_cast<const unsigned char*>(signature_b64),
+                std::strlen(signature_b64)) != 0) {
+          return {false, lifeos::protocol::ErrorCode::InvalidSchema,
+                  "firmware_signature_invalid"};
+        }
+        manifest.signature_der_size = decoded_size;
+        const auto state = snapshot();
+        const bool safety_permitted = state.paused && !state.torque_enabled &&
+                                      !state.fault && !state.emergency_stop &&
+                                      !state.link_lost;
+        bool locally_confirmed = false;
+        portENTER_CRITICAL(&guard_);
+        locally_confirmed = !maintenance_used_ && maintenance_confirmed_ &&
+                            current_ms < maintenance_expires_at_ms_ &&
+                            std::string_view(maintenance_operation_) == "firmware_update" &&
+                            std::string_view(maintenance_challenge_id_) == confirmation_challenge_id &&
+                            std::string_view(maintenance_rollout_id_) == rollout_id &&
+                            std::string_view(maintenance_sha256_) == manifest.sha256_hex;
+        if (locally_confirmed) {
+          maintenance_used_ = true;
+          maintenance_confirmed_ = false;
+          maintenance_confirmation_event_pending_ = false;
+        }
+        portEXIT_CRITICAL(&guard_);
+        if (!locally_confirmed) {
+          return {false, lifeos::protocol::ErrorCode::Unauthorized,
+                  "firmware_local_confirmation_required"};
+        }
+        const auto error = firmware_update.begin(manifest, safety_permitted);
+        if (error != lifeos::runtime::FirmwareUpdateError::None) {
+          return {false, firmware_error_code(error),
+                  lifeos::runtime::firmware_update_error_name(error)};
+        }
+        std::snprintf(active_firmware_rollout_id,
+                      sizeof(active_firmware_rollout_id), "%s", rollout_id);
+        return {true, lifeos::protocol::ErrorCode::Internal,
+                "firmware_begin"};
+      }
+      if (std::string_view(rollout_id) != active_firmware_rollout_id) {
+        return {false, lifeos::protocol::ErrorCode::Unauthorized,
+                "firmware_rollout_session_mismatch"};
+      }
+      if (text_field(payload, "action", "chunk")) {
+        std::uint64_t offset = 0;
+        static char encoded[4097]{};
+        static std::uint8_t decoded[lifeos::runtime::kFirmwareUpdateChunkBytes]{};
+        if (!unsigned_field(payload, "offset", offset) || offset > UINT32_MAX ||
+            !copy_string_field(payload, "data", encoded, sizeof(encoded))) {
+          return {false, lifeos::protocol::ErrorCode::InvalidSchema,
+                  "firmware_chunk_invalid"};
+        }
+        std::size_t decoded_size = 0;
+        if (mbedtls_base64_decode(decoded, sizeof(decoded), &decoded_size,
+                                  reinterpret_cast<const unsigned char*>(encoded),
+                                  std::strlen(encoded)) != 0 ||
+            decoded_size == 0) {
+          return {false, lifeos::protocol::ErrorCode::InvalidSchema,
+                  "firmware_chunk_invalid"};
+        }
+        const auto error = firmware_update.write(
+            static_cast<std::uint32_t>(offset), decoded, decoded_size);
+        if (error != lifeos::runtime::FirmwareUpdateError::None) {
+          active_firmware_rollout_id[0] = '\0';
+          return {false, firmware_error_code(error),
+                  lifeos::runtime::firmware_update_error_name(error)};
+        }
+        return {true, lifeos::protocol::ErrorCode::Internal,
+                "firmware_chunk"};
+      }
+      if (text_field(payload, "action", "commit")) {
+        const auto error = firmware_update.commit();
+        if (error != lifeos::runtime::FirmwareUpdateError::None) {
+          active_firmware_rollout_id[0] = '\0';
+          return {false, firmware_error_code(error),
+                  lifeos::runtime::firmware_update_error_name(error)};
+        }
+        active_firmware_rollout_id[0] = '\0';
+        return {true, lifeos::protocol::ErrorCode::Internal,
+                "firmware_commit"};
+      }
+      return {false, lifeos::protocol::ErrorCode::Unsupported,
+              "firmware_action_unsupported"};
+    }
+    if (type == "command.maintenance") {
+      if (!device_user_store_ready) {
+        return {false, lifeos::protocol::ErrorCode::Unsupported,
+                "maintenance_store_unavailable"};
+      }
+      char challenge_id[97]{};
+      char operation[32]{};
+      if (!copy_token_field(payload, "challenge_id", challenge_id, sizeof(challenge_id)) ||
+          !copy_token_field(payload, "operation", operation, sizeof(operation)) ||
+          (std::string_view(operation) != "factory_reset" &&
+           std::string_view(operation) != "firmware_update")) {
+        return {false, lifeos::protocol::ErrorCode::InvalidSchema,
+                "maintenance_payload_invalid"};
+      }
+      if (text_field(payload, "action", "prepare")) {
+        std::uint64_t valid_for_ms = 0;
+        char bound_rollout_id[97]{};
+        char bound_sha256[65]{};
+        if (!unsigned_field(payload, "valid_for_ms", valid_for_ms) ||
+            valid_for_ms == 0 || valid_for_ms > 300000 ||
+            current_ms > UINT64_MAX - valid_for_ms) {
+          return {false, lifeos::protocol::ErrorCode::InvalidSchema,
+                  "maintenance_lifetime_invalid"};
+        }
+        if (std::string_view(operation) == "firmware_update" &&
+            (!copy_token_field(payload, "rollout_id", bound_rollout_id,
+                               sizeof(bound_rollout_id)) ||
+             !copy_token_field(payload, "sha256_hex", bound_sha256,
+                               sizeof(bound_sha256)) ||
+             std::strlen(bound_sha256) != 64)) {
+          return {false, lifeos::protocol::ErrorCode::InvalidSchema,
+                  "maintenance_firmware_binding_invalid"};
+        }
+        core_.cancel_all();
+        cut_vm_power("maintenance_prepare");
+        portENTER_CRITICAL(&guard_);
+        manual_control_.reset();
+        paused_ = true;
+        std::snprintf(maintenance_challenge_id_, sizeof(maintenance_challenge_id_),
+                      "%s", challenge_id);
+        std::snprintf(maintenance_operation_, sizeof(maintenance_operation_),
+                      "%s", operation);
+        std::snprintf(maintenance_rollout_id_, sizeof(maintenance_rollout_id_),
+                      "%s", bound_rollout_id);
+        std::snprintf(maintenance_sha256_, sizeof(maintenance_sha256_),
+                      "%s", bound_sha256);
+        maintenance_expires_at_ms_ = current_ms + valid_for_ms;
+        maintenance_confirmed_ = false;
+        maintenance_used_ = false;
+        maintenance_confirmation_event_pending_ = false;
+        portEXIT_CRITICAL(&guard_);
+        return {true, lifeos::protocol::ErrorCode::Internal,
+                "maintenance_confirmation_pending"};
+      }
+      if (text_field(payload, "action", "execute")) {
+        if (std::string_view(operation) != "factory_reset") {
+          return {false, lifeos::protocol::ErrorCode::Unsupported,
+                  "maintenance_operation_consumed_by_update"};
+        }
+        bool accepted = false;
+        portENTER_CRITICAL(&guard_);
+        accepted = !maintenance_used_ && maintenance_confirmed_ &&
+                   current_ms < maintenance_expires_at_ms_ &&
+                   std::string_view(challenge_id) == maintenance_challenge_id_ &&
+                   std::string_view(operation) == maintenance_operation_;
+        if (accepted) {
+          maintenance_used_ = true;
+          maintenance_confirmed_ = false;
+          maintenance_confirmation_event_pending_ = false;
+          manual_control_.reset();
+          paused_ = true;
+        }
+        portEXIT_CRITICAL(&guard_);
+        if (!accepted) {
+          return {false, lifeos::protocol::ErrorCode::Unauthorized,
+                  "maintenance_confirmation_required"};
+        }
+        core_.cancel_all();
+        cut_vm_power("factory_reset");
+        return {true, lifeos::protocol::ErrorCode::Internal, "factory_reset"};
+      }
+      return {false, lifeos::protocol::ErrorCode::Unsupported,
+              "maintenance_action_unsupported"};
+    }
     if (type == "command.maintenance_motion") {
       // 维护运动（仅 HIL 模式）：鉴权 + 数字参数校验，提交带 TTL 的运动
 #if CONFIG_LIFEOS_HIL_TEST_MODE
@@ -776,7 +1146,12 @@ class TargetRuntime final {
     // ⑧ 主机失联：取消所有未完成命令
     if (link_lost) {
       core_.cancel_all();
+      firmware_abort_requested.store(true, std::memory_order_release);
       portENTER_CRITICAL(&guard_);
+      manual_control_.reset();
+      // A recovered transport only restores communication. Motion remains
+      // paused until an explicit operator resume command arrives.
+      paused_ = true;
       camera_preview_enabled_ = false;
       camera_preview_deadline_ms_ = 0;
       portEXIT_CRITICAL(&guard_);
@@ -883,14 +1258,35 @@ class TargetRuntime final {
       return true;
     } else if (sample.touched) {
       portENTER_CRITICAL(&guard_);
-      const bool clear = sample.duration_ms >= 1500 && (fault_ || emergency_stop_);
-      if (clear) clear_requested_ = true;
-      if (clear) touch_clear_hold_ = true;
-      else if (!touch_clear_hold_ && !fault_ && !emergency_stop_) paused_ = true;
+      const bool maintenance_pending = maintenance_challenge_id_[0] != '\0' &&
+                                       !maintenance_confirmed_ && !maintenance_used_ &&
+                                       graph_now_ms_ < maintenance_expires_at_ms_;
+      const bool maintenance_confirm = maintenance_pending &&
+                                       sample.duration_ms >= 2000;
+      if (maintenance_confirm) {
+        maintenance_confirmed_ = true;
+        maintenance_confirmation_event_pending_ = true;
+        maintenance_touch_hold_ = true;
+      } else {
+        const bool clear = sample.duration_ms >= 1500 &&
+                           (fault_ || emergency_stop_) && !maintenance_pending;
+        if (clear) clear_requested_ = true;
+        if (clear) touch_clear_hold_ = true;
+        else if (!touch_clear_hold_ && !maintenance_touch_hold_ &&
+                 !fault_ && !emergency_stop_) paused_ = true;
+      }
       portEXIT_CRITICAL(&guard_);
     } else {
       portENTER_CRITICAL(&guard_);
       touch_clear_hold_ = false;
+      maintenance_touch_hold_ = false;
+      if (maintenance_challenge_id_[0] != '\0' &&
+          graph_now_ms_ >= maintenance_expires_at_ms_) {
+        maintenance_challenge_id_[0] = '\0';
+        maintenance_operation_[0] = '\0';
+        maintenance_confirmed_ = false;
+        maintenance_confirmation_event_pending_ = false;
+      }
       portEXIT_CRITICAL(&guard_);
     }
 
@@ -971,6 +1367,15 @@ class TargetRuntime final {
   bool feedback_frozen_{false};
   bool clear_requested_{false};
   bool touch_clear_hold_{false};
+  char maintenance_challenge_id_[97]{};
+  char maintenance_operation_[32]{};
+  char maintenance_rollout_id_[97]{};
+  char maintenance_sha256_[65]{};
+  std::uint64_t maintenance_expires_at_ms_{0};
+  bool maintenance_confirmed_{false};
+  bool maintenance_used_{false};
+  bool maintenance_confirmation_event_pending_{false};
+  bool maintenance_touch_hold_{false};
   bool graph_compiled_{false};
   bool safety_latched_{false};
   bool torque_enabled_{false};
@@ -992,10 +1397,17 @@ void emit_hello(const lifeos::protocol::Envelope& request) {
   const auto state = runtime.snapshot();
   const bool camera_ready =
       board.camera().status().state == lifeos::hal::CapabilityState::Available;
-  const char* camera_capability = camera_ready ? "\"camera\"," : "";
+  const char* camera_capability =
+      camera_ready ? "\"camera\",\"camera_capture_ts_v1\"," : "";
+  const char* maintenance_capability =
+      device_user_store_ready
+          ? "\"maintenance_confirmation\",\"maintenance_execute\","
+          : "";
+  const char* firmware_update_capability =
+      firmware_update_backend.runtime_ready() ? "\"firmware_update_v1\"," : "";
 #if LIFEOS_MANUAL_CONTROL_V1
   const char* manual_control_capability =
-      state.motion_ready ? "\"manual_control_v1\"," : "";
+      state.motion_ready ? "\"manual_control_v1\",\"manual_video_guard_v1\"," : "";
   const char* manual_preflight_capability =
       state.motion_ready ? "\"manual_preflight_v1\"," : "";
 #else
@@ -1008,22 +1420,28 @@ void emit_hello(const lifeos::protocol::Envelope& request) {
   set_text(response.event_id, "device-hello");
   set_text(response.correlation_id, request.event_id.view());
   set_text(response.device_id, kDeviceId);
-  char mac_text[24]{};
-  std::uint8_t mac[6]{};
-  esp_read_mac(mac, ESP_MAC_WIFI_STA);
-  std::snprintf(mac_text, sizeof(mac_text), "%02x:%02x:%02x:%02x:%02x:%02x",
-                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
   char payload[768]{};
+  char firmware_sha_json[72]{"null"};
+  if (firmware_image_sha256[0] != '\0') {
+    std::snprintf(firmware_sha_json, sizeof(firmware_sha_json), "\"%s\"",
+                  firmware_image_sha256);
+  }
   std::snprintf(payload, sizeof(payload),
-                "{\"firmware\":\"%s\",\"board\":\"StackChan/CoreS3\","
-                "\"mac\":\"%s\",\"protocol_versions\":[\"lifeos.v1\"],"
+                "{\"firmware\":\"%s\",\"firmware_image_version\":\"%s\","
+                "\"firmware_boot_state\":\"%s\",\"firmware_image_sha256\":%s,"
+                "\"board\":\"StackChan/CoreS3\","
+                "\"mac\":\"%s\",\"clock_id\":\"%s\","
+                "\"protocol_versions\":[\"lifeos.v1\"],"
                 "\"capabilities\":[\"status\",\"protocol\",\"safety\",\"motion\","
-                "\"health\",\"touch\",\"imu\",%s%s%s\"display\"],"
+                "\"health\",\"touch\",\"imu\",%s%s%s%s%s\"display\"],"
                 "\"motion_enabled\":%s,\"torque_enabled\":%s,\"camera_ready\":%s,"
                 "\"heap_free\":%u,"
                 "\"psram_free\":%u}",
-                kFirmware, mac_text, camera_capability, manual_control_capability,
-                manual_preflight_capability,
+                kFirmware, esp_app_get_description()->version, firmware_boot_state,
+                firmware_sha_json,
+                hardware_id_text, device_clock_id, camera_capability,
+                manual_control_capability, manual_preflight_capability,
+                maintenance_capability, firmware_update_capability,
                 state.motion_ready ? "true" : "false",
                 state.torque_enabled ? "true" : "false",
                 camera_ready ? "true" : "false",
@@ -1185,9 +1603,11 @@ void emit_camera_frame(const CameraJpegFrame& frame) {
   const int begin_size = std::snprintf(
       payload, sizeof(payload),
       "{\"frame_id\":\"%s\",\"format\":\"jpeg\",\"width\":%u,"
-      "\"height\":%u,\"size\":%u,\"chunk_count\":%u}",
+      "\"height\":%u,\"size\":%u,\"chunk_count\":%u,"
+      "\"capture_ts_ms\":%llu,\"clock_id\":\"%s\"}",
       frame_id, static_cast<unsigned>(frame.width), static_cast<unsigned>(frame.height),
-      static_cast<unsigned>(frame.size), static_cast<unsigned>(chunk_count));
+      static_cast<unsigned>(frame.size), static_cast<unsigned>(chunk_count),
+      static_cast<unsigned long long>(frame.timestamp_ms), device_clock_id);
   if (begin_size <= 0 || static_cast<std::size_t>(begin_size) >= sizeof(payload)) return;
   set_text(envelope.payload, {payload, static_cast<std::size_t>(begin_size)});
   if (!emit_in_place(envelope, true)) return;
@@ -1256,12 +1676,56 @@ lifeos::protocol::ErrorCode parse_error_code(lifeos::protocol::ParseError error)
   }
 }
 
+void emit_maintenance_confirmation() {
+  TargetRuntime::MaintenanceConfirmation confirmation;
+  if (!runtime.take_maintenance_confirmation(confirmation, now_ms())) return;
+  lifeos::protocol::Envelope response;
+  response.kind = lifeos::protocol::Kind::Event;
+  set_text(response.type, "maintenance.confirmed");
+  char event_id[64]{};
+  std::snprintf(event_id, sizeof(event_id), "maintenance-confirmed-%llu",
+                static_cast<unsigned long long>(++maintenance_confirmation_sequence));
+  set_text(response.event_id, event_id);
+  set_text(response.correlation_id, confirmation.challenge_id);
+  set_text(response.device_id, kDeviceId);
+  char payload[384]{};
+  const int size = std::snprintf(
+      payload, sizeof(payload),
+      "{\"challenge_id\":\"%s\",\"operation\":\"%s\","
+      "\"result\":\"confirmed\",\"valid_for_ms\":%u}",
+      confirmation.challenge_id, confirmation.operation,
+      static_cast<unsigned>(confirmation.valid_for_ms));
+  if (size > 0 && static_cast<std::size_t>(size) < sizeof(payload)) {
+    set_text(response.payload, {payload, static_cast<std::size_t>(size)});
+    (void)emit(response);
+  }
+}
+
+bool clear_device_user_state() {
+  // Only the explicitly owned user/pairing namespaces are erased. Hardware
+  // identity, safety constants, OTA metadata and embedded recovery trust are
+  // outside these namespaces and remain untouched.
+  constexpr const char* namespaces[] = {"lifeos_user", "lifeos_pairing"};
+  for (const char* name : namespaces) {
+    nvs_handle_t handle{};
+    const esp_err_t opened = nvs_open(name, NVS_READWRITE, &handle);
+    if (opened == ESP_ERR_NVS_NOT_FOUND) continue;
+    if (opened != ESP_OK) return false;
+    const esp_err_t erased = nvs_erase_all(handle);
+    const esp_err_t committed = erased == ESP_OK ? nvs_commit(handle) : erased;
+    nvs_close(handle);
+    if (committed != ESP_OK) return false;
+  }
+  return true;
+}
+
 // ---- 常驻任务 ----
 // 行为图任务：core 1，优先级 5，每 100ms 执行一次 DAG 节拍
 void graph_task(void* argument) {
   auto* target = static_cast<TargetRuntime*>(argument);
   while (true) {
     target->graph_tick(now_ms());
+    emit_maintenance_confirmation();
     vTaskDelay(pdMS_TO_TICKS(kGraphPeriodMs));
   }
 }
@@ -1348,9 +1812,41 @@ extern "C" void app_main() {
   //    直到第一次主机交互后才按 4s 空闲门控（见 kConsoleIdleDropMs）
   last_console_rx_ms.store(now_ms(), std::memory_order_relaxed);
 
+  std::snprintf(device_clock_id, sizeof(device_clock_id), "boot-%08x-%08x",
+                static_cast<unsigned>(esp_random()),
+                static_cast<unsigned>(esp_random()));
+  device_user_store_ready = nvs_flash_init() == ESP_OK;
+
+  std::uint8_t identity_mac[6]{};
+  esp_read_mac(identity_mac, ESP_MAC_WIFI_STA);
+  std::snprintf(hardware_id_text, sizeof(hardware_id_text),
+                "%02x:%02x:%02x:%02x:%02x:%02x",
+                identity_mac[0], identity_mac[1], identity_mac[2], identity_mac[3],
+                identity_mac[4], identity_mac[5]);
+  (void)firmware_update_backend.set_hardware_id(hardware_id_text);
+  (void)lifeos::idf::running_firmware_image_sha256(
+      firmware_image_sha256, sizeof(firmware_image_sha256));
+
   // ③ 初始化板级硬件与运行时（建图、复位共享状态、初始心跳）
   const bool hardware_ready = board.begin();
+  const auto firmware_boot_result =
+      lifeos::idf::confirm_firmware_boot(hardware_ready);
+  if (firmware_boot_result == lifeos::idf::FirmwareBootResult::Accepted) {
+    std::snprintf(firmware_boot_state, sizeof(firmware_boot_state), "valid");
+  } else if (firmware_boot_result == lifeos::idf::FirmwareBootResult::NotPending) {
+    std::snprintf(
+        firmware_boot_state, sizeof(firmware_boot_state), "%s",
+        firmware_update_backend.runtime_ready()
+            ? "valid"
+            : "legacy");
+  } else {
+    std::snprintf(firmware_boot_state, sizeof(firmware_boot_state), "pending_verify");
+  }
   runtime.begin();
+  if (firmware_update_backend.runtime_ready() ||
+      firmware_boot_result != lifeos::idf::FirmwareBootResult::NotPending) {
+    runtime.require_explicit_resume();
+  }
   hil_log("LIFEOS_HIL_READY %s motion=%s board=%s\n", kFirmware,
           hardware_ready ? "enabled" : "disabled", hardware_ready ? "ready" : "degraded");
   // ④ 创建六个常驻任务（见上方任务注释）：
@@ -1371,6 +1867,10 @@ extern "C" void app_main() {
   std::size_t length = 0;
   std::uint8_t byte = 0;
   while (true) {
+    if (firmware_abort_requested.exchange(false, std::memory_order_acq_rel)) {
+      firmware_update.abort();
+      active_firmware_rollout_id[0] = '\0';
+    }
     // ① 逐字节读取一行：\r 忽略、\n 结束；同时刷新"最近主机通信"
     // ② 超长行丢弃并吞到行尾，防止缓冲错位
     if (usb_serial_jtag_read_bytes(&byte, 1, portMAX_DELAY) <= 0) continue;
@@ -1406,7 +1906,24 @@ extern "C" void app_main() {
       const auto outcome = runtime.handle(result.envelope, now_ms());
       if (!outcome.accepted) emit_error(result, outcome.code, outcome.detail);
       else if (std::string_view(outcome.detail) == "status") emit_status(result.envelope);
-      else emit(lifeos::protocol::make_ack(result.envelope,
+      else if (std::string_view(outcome.detail) == "factory_reset") {
+        if (!clear_device_user_state()) {
+          emit_error(result, lifeos::protocol::ErrorCode::Internal,
+                     "factory_reset_storage_failed");
+        } else {
+          emit(lifeos::protocol::make_ack(result.envelope,
+                                          lifeos::protocol::AckStatus::Accepted,
+                                          false, 0, now_ms()));
+          vTaskDelay(pdMS_TO_TICKS(100));
+          esp_restart();
+        }
+      } else if (std::string_view(outcome.detail) == "firmware_commit") {
+        emit(lifeos::protocol::make_ack(result.envelope,
+                                        lifeos::protocol::AckStatus::Accepted,
+                                        false, 0, now_ms()));
+        vTaskDelay(pdMS_TO_TICKS(100));
+        esp_restart();
+      } else emit(lifeos::protocol::make_ack(result.envelope,
                                              lifeos::protocol::AckStatus::Accepted,
                                              false, 0, now_ms()));
       const auto type_view = result.envelope.type.view();

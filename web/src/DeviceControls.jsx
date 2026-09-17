@@ -54,11 +54,59 @@ async function settleCommand(data) {
   return latest;
 }
 
-function ManualControl({ device, enabled, onCameraPreviewStopped }) {
-  const { t } = useI18n();
+function useControlChannel(deviceId, enabled) {
   const socketRef = useRef(null);
+  const listenersRef = useRef(new Set());
+  const [connectionId, setConnectionId] = useState(null);
+
+  const subscribe = useCallback((listener) => {
+    listenersRef.current.add(listener);
+    return () => listenersRef.current.delete(listener);
+  }, []);
+
+  const send = useCallback((message) => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    socket.send(JSON.stringify(message));
+    return true;
+  }, []);
+
+  useEffect(() => {
+    if (!enabled || !deviceId) return undefined;
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(`${protocol}//${window.location.host}/api/v1/control`);
+    socketRef.current = socket;
+    const publish = (value) => listenersRef.current.forEach((listener) => listener(value));
+    socket.addEventListener("message", (event) => {
+      try {
+        const value = JSON.parse(event.data);
+        if (value.type === "control.connected") setConnectionId(value.connection_id);
+        publish(value);
+      } catch {
+        // Ignore malformed server data; the socket lifecycle still fails closed.
+      }
+    });
+    socket.addEventListener("close", () => {
+      if (socketRef.current === socket) socketRef.current = null;
+      setConnectionId(null);
+      publish({ type: "control.disconnected" });
+    });
+    socket.addEventListener("error", () => publish({ type: "control.disconnected" }));
+    return () => {
+      setConnectionId(null);
+      if (socketRef.current === socket) socketRef.current = null;
+      socket.close();
+    };
+  }, [deviceId, enabled]);
+
+  return { connectionId, send, subscribe, connected: connectionId !== null };
+}
+
+function ManualControl({ device, enabled, channel }) {
+  const { t } = useI18n();
   const leaseRef = useRef(null);
   const acquireRef = useRef(null);
+  const acquireWaiterRef = useRef(null);
   const sequenceRef = useRef(0);
   const timerRef = useRef(null);
   const holdingRef = useRef(null);
@@ -76,22 +124,21 @@ function ManualControl({ device, enabled, onCameraPreviewStopped }) {
   }, []);
 
   const sendInput = useCallback((action, direction) => {
-    const socket = socketRef.current;
     const lease = leaseRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN || !lease || inputInFlightRef.current) return false;
+    if (!channel.connected || !lease || inputInFlightRef.current) return false;
     sequenceRef.current += 1;
     inputInFlightRef.current = true;
     pendingActionRef.current = action;
-    socket.send(JSON.stringify({
+    channel.send({
       type: "input",
       lease_id: lease.lease_id,
       input_seq: sequenceRef.current,
       action,
       ...(direction ? { direction } : {}),
       ttl_ms: 500,
-    }));
+    });
     return true;
-  }, []);
+  }, [channel]);
 
   const sendRelease = useCallback(() => {
     if (!leaseRef.current || inputInFlightRef.current) return false;
@@ -111,96 +158,70 @@ function ManualControl({ device, enabled, onCameraPreviewStopped }) {
   const acquire = useCallback(() => {
     if (leaseRef.current) return Promise.resolve(leaseRef.current);
     if (acquireRef.current) return acquireRef.current;
-
+    if (!channel.connected) return Promise.reject(new Error(t("manual.disconnected")));
     const promise = new Promise((resolve, reject) => {
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const socket = new WebSocket(`${protocol}//${window.location.host}/api/v1/control`);
-      socketRef.current = socket;
-      let settled = false;
-
-      socket.addEventListener("open", () => {
-        socket.send(JSON.stringify({
-          type: "lease.acquire",
-          device_id: device.device_id,
-          ttl_ms: 500,
-          max_duration_ms: 30_000,
-        }));
-      });
-      socket.addEventListener("message", (event) => {
-        let value;
-        try {
-          value = JSON.parse(event.data);
-        } catch {
-          return;
-        }
-        if (value.type === "lease.acquired") {
-          settled = true;
-          leaseRef.current = value.lease;
-          sequenceRef.current = 0;
-          if (value.camera_preview_stopped === true) {
-            onCameraPreviewStopped?.();
-            setMessage(t("manual.cameraPaused"));
-          }
-          setState("ready");
-          resolve(value.lease);
-        } else if (value.type === "control.error") {
-          inputInFlightRef.current = false;
-          pendingActionRef.current = null;
-          releasePendingRef.current = false;
-          setMessage(value.reason || value.code || t("manual.failed"));
-          if (!settled) {
-            settled = true;
-            reject(new Error(value.reason || value.code || "control rejected"));
-          }
-        } else if (value.type === "command.state.changed" && value.command?.state) {
-          if (value.command.type !== "manual_control") return;
-          const action = pendingActionRef.current;
-          inputInFlightRef.current = false;
-          pendingActionRef.current = null;
-          if (value.command.state === "completed") {
-            if (action === "release") {
-              leaseRef.current = null;
-              releasePendingRef.current = false;
-              setState("ready");
-            } else if (releasePendingRef.current) {
-              sendRelease();
-            }
-          } else if (FAILURE_STATES.has(value.command.state)) {
-            holdingRef.current = null;
-            clearTimer();
-            leaseRef.current = null;
-            releasePendingRef.current = false;
-            setState("error");
-            setMessage(commandResultText(value.command, t));
-          }
-        }
-      });
-      socket.addEventListener("error", () => {
-        if (!settled) {
-          settled = true;
-          reject(new Error(t("manual.failed")));
-        }
-        setState("error");
-      });
-      socket.addEventListener("close", () => {
-        clearTimer();
-        leaseRef.current = null;
-        socketRef.current = null;
-        inputInFlightRef.current = false;
-        pendingActionRef.current = null;
-        releasePendingRef.current = false;
-        setState("idle");
-        if (!settled) {
-          settled = true;
-          reject(new Error(t("manual.disconnected")));
-        }
-      });
+      acquireWaiterRef.current = { resolve, reject };
+      if (!channel.send({
+        type: "lease.acquire",
+        device_id: device.device_id,
+        ttl_ms: 500,
+        max_duration_ms: 30_000,
+      })) {
+        acquireWaiterRef.current = null;
+        reject(new Error(t("manual.disconnected")));
+      }
     });
     acquireRef.current = promise.finally(() => {
       acquireRef.current = null;
     });
     return acquireRef.current;
-  }, [clearTimer, device.device_id, onCameraPreviewStopped, sendRelease, t]);
+  }, [channel, device.device_id, t]);
+
+  useEffect(() => channel.subscribe((value) => {
+    if (value.type === "lease.acquired") {
+      leaseRef.current = value.lease;
+      sequenceRef.current = 0;
+      setState("ready");
+      acquireWaiterRef.current?.resolve(value.lease);
+      acquireWaiterRef.current = null;
+    } else if (value.type === "control.error") {
+      inputInFlightRef.current = false;
+      pendingActionRef.current = null;
+      releasePendingRef.current = false;
+      setMessage(value.reason || value.code || t("manual.failed"));
+      acquireWaiterRef.current?.reject(new Error(value.reason || value.code || "control rejected"));
+      acquireWaiterRef.current = null;
+    } else if (value.type === "command.state.changed" && value.command?.type === "manual_control") {
+      const action = pendingActionRef.current;
+      inputInFlightRef.current = false;
+      pendingActionRef.current = null;
+      if (value.command.state === "completed") {
+        if (action === "release") {
+          leaseRef.current = null;
+          releasePendingRef.current = false;
+          setState("ready");
+        } else if (releasePendingRef.current) {
+          sendRelease();
+        }
+      } else if (FAILURE_STATES.has(value.command.state)) {
+        holdingRef.current = null;
+        clearTimer();
+        leaseRef.current = null;
+        releasePendingRef.current = false;
+        setState("error");
+        setMessage(commandResultText(value.command, t));
+      }
+    } else if (value.type === "control.disconnected") {
+      clearTimer();
+      leaseRef.current = null;
+      inputInFlightRef.current = false;
+      pendingActionRef.current = null;
+      releasePendingRef.current = false;
+      setState("idle");
+      acquireWaiterRef.current?.reject(new Error(t("manual.disconnected")));
+      acquireWaiterRef.current = null;
+    }
+  }), [channel, clearTimer, sendRelease, t]);
 
   const hold = useCallback(async (direction) => {
     holdingRef.current = direction;
@@ -234,7 +255,6 @@ function ManualControl({ device, enabled, onCameraPreviewStopped }) {
       window.removeEventListener("blur", stop);
       document.removeEventListener("visibilitychange", stop);
       release();
-      if (socketRef.current) socketRef.current.close();
     };
   }, [release]);
 
@@ -298,49 +318,126 @@ function ManualControl({ device, enabled, onCameraPreviewStopped }) {
   );
 }
 
-function CameraPreview({ device, mediaEnabled = false, manualPreviewStopVersion = 0 }) {
+function CameraPreview({ device, mediaEnabled = false, channel, onVideoReady }) {
   const { t } = useI18n();
   const [active, setActive] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
   const [state, setState] = useState("idle");
   const [message, setMessage] = useState(null);
-  const [streamKey, setStreamKey] = useState(0);
+  const [frame, setFrame] = useState(null);
   const activeRef = useRef(false);
-  const manualPreviewStopVersionRef = useRef(manualPreviewStopVersion);
+  const frameRef = useRef(null);
   const session = currentSession(device);
   const capabilities = new Set(session?.capabilities || device?.capabilities || []);
   const online = session?.state === "online" || session?.state === "degraded";
-  const canPreview = mediaEnabled && capabilities.has("camera") && online;
+  const canPreview = mediaEnabled && channel.connected && capabilities.has("camera") &&
+    capabilities.has("camera_capture_ts_v1") && online;
 
   useEffect(() => {
     activeRef.current = active;
   }, [active]);
 
+  useEffect(() => channel.subscribe((value) => {
+    if (value.type === "viewer.opened" && value.device_id === device.device_id) {
+      setViewerOpen(true);
+      setState("waiting");
+    } else if (value.type === "viewer.closed" || value.type === "control.disconnected") {
+      setViewerOpen(false);
+      setActive(false);
+      setState("idle");
+      onVideoReady(false);
+    } else if (value.type === "video.display.acknowledged") {
+      setState("live");
+      onVideoReady(true);
+    } else if (value.type === "control.error" && activeRef.current) {
+      setMessage(value.reason || value.code || t("camera.failed"));
+      setState("stale");
+      onVideoReady(false);
+    }
+  }), [channel, device.device_id, onVideoReady, t]);
+
   useEffect(() => {
     if (active && (!canPreview || !session?.session_id)) {
       setActive(false);
+      setViewerOpen(false);
       setState("idle");
-      setMessage(null);
+      onVideoReady(false);
     }
-  }, [active, canPreview, session?.session_id]);
+  }, [active, canPreview, onVideoReady, session?.session_id]);
 
   useEffect(() => {
     setActive(false);
+    setViewerOpen(false);
     setState("idle");
     setMessage(null);
-    setStreamKey(0);
-  }, [device?.device_id]);
+    setFrame(null);
+    onVideoReady(false);
+  }, [device?.device_id, onVideoReady]);
 
   useEffect(() => {
-    if (manualPreviewStopVersionRef.current === manualPreviewStopVersion) return;
-    manualPreviewStopVersionRef.current = manualPreviewStopVersion;
-    setActive(false);
-    setState("idle");
-    setMessage(null);
-    setStreamKey((value) => value + 1);
-  }, [manualPreviewStopVersion]);
+    if (!active || !viewerOpen || !channel.connectionId) return undefined;
+    let cancelled = false;
+    let timeout = null;
+    const poll = async () => {
+      try {
+        const response = await fetch(
+          `/api/v1/devices/${encodeURIComponent(device.device_id)}/camera/frame?viewer_id=${encodeURIComponent(channel.connectionId)}`,
+          { cache: "no-store" },
+        );
+        if (response.status === 404) return;
+        if (!response.ok) throw new Error("camera frame unavailable");
+        const frameId = response.headers.get("X-LifeOS-Frame-Id");
+        const token = response.headers.get("X-LifeOS-Frame-Token");
+        if (!frameId || !token || frameRef.current?.id === frameId) return;
+        const url = URL.createObjectURL(await response.blob());
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        setFrame((previous) => {
+          if (previous?.url) URL.revokeObjectURL(previous.url);
+          return { id: frameId, token, url };
+        });
+      } catch {
+        if (!cancelled) {
+          setState("stale");
+          onVideoReady(false);
+        }
+      } finally {
+        if (!cancelled) timeout = window.setTimeout(poll, 100);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (timeout !== null) window.clearTimeout(timeout);
+    };
+  }, [active, channel.connectionId, device.device_id, onVideoReady, viewerOpen]);
+
+  useEffect(() => {
+    frameRef.current = frame;
+    return () => {
+      if (frame?.url) URL.revokeObjectURL(frame.url);
+    };
+  }, [frame]);
+
+  useEffect(() => {
+    const hide = () => {
+      if (document.visibilityState !== "visible" && activeRef.current) {
+        channel.send({ type: "viewer.close" });
+        setActive(false);
+        setViewerOpen(false);
+        setState("idle");
+        onVideoReady(false);
+      }
+    };
+    document.addEventListener("visibilitychange", hide);
+    return () => document.removeEventListener("visibilitychange", hide);
+  }, [channel, onVideoReady]);
 
   useEffect(() => () => {
     if (activeRef.current) {
+      channel.send({ type: "viewer.close" });
       fetch(`/api/v1/devices/${encodeURIComponent(device.device_id)}/camera-preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -348,13 +445,15 @@ function CameraPreview({ device, mediaEnabled = false, manualPreviewStopVersion 
         body: JSON.stringify({ action: "stop" }),
       }).catch(() => {});
     }
-  }, [device.device_id]);
+  }, [channel, device.device_id]);
 
   const toggle = async () => {
     const action = active ? "stop" : "start";
     setState("requesting");
     setMessage(null);
+    onVideoReady(false);
     try {
+      if (action === "stop") channel.send({ type: "viewer.close" });
       const response = await fetch(`/api/v1/devices/${encodeURIComponent(device.device_id)}/camera-preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -367,44 +466,50 @@ function CameraPreview({ device, mediaEnabled = false, manualPreviewStopVersion 
       }
       if (action === "start") {
         setActive(true);
-        setStreamKey((value) => value + 1);
         setState("waiting");
+        if (!channel.send({ type: "viewer.open", device_id: device.device_id })) {
+          throw new Error(t("manual.disconnected"));
+        }
       } else {
         setActive(false);
+        setViewerOpen(false);
+        setFrame(null);
         setState("idle");
       }
     } catch (error) {
+      setActive(false);
+      setViewerOpen(false);
       setState("error");
       setMessage(error.message || t("camera.failed"));
     }
   };
 
-  const streamUrl = active
-    ? `/api/v1/devices/${encodeURIComponent(device.device_id)}/camera/stream?session=${encodeURIComponent(session?.session_id || "")}&v=${streamKey}`
-    : null;
+  const acknowledgeDisplay = () => {
+    if (!frame || document.visibilityState !== "visible") return;
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      if (document.visibilityState === "visible" && frameRef.current?.id === frame.id) {
+        channel.send({
+          type: "video.displayed",
+          device_id: device.device_id,
+          frame_id: frame.id,
+          token: frame.token,
+          visible: true,
+        });
+      }
+    }));
+  };
 
   return (
     <section className="control-section camera-section" aria-labelledby="camera-heading">
       <div className="control-heading">
-        <div>
-          <h4 id="camera-heading">{t("camera.heading")}</h4>
-          <p>{t("camera.copy")}</p>
-        </div>
+        <div><h4 id="camera-heading">{t("camera.heading")}</h4><p>{t("camera.copy")}</p></div>
         <span className="control-state" data-state={state}>{t(`camera.state.${state}`)}</span>
       </div>
       <div className="camera-frame" data-state={state}>
-        {active && streamUrl ? (
-          <img
-            src={streamUrl}
-            alt={t("camera.alt", device.display_name || device.device_id)}
-            onLoad={() => setState("live")}
-            onError={() => setState("stale")}
-          />
+        {active && frame?.url ? (
+          <img src={frame.url} alt={t("camera.alt", device.display_name || device.device_id)} onLoad={acknowledgeDisplay} onError={() => { setState("stale"); onVideoReady(false); }} />
         ) : (
-          <div className="camera-placeholder">
-            <span aria-hidden="true">◌</span>
-            <p>{canPreview ? t("camera.placeholder") : mediaEnabled ? t("camera.unavailable") : t("camera.gate")}</p>
-          </div>
+          <div className="camera-placeholder"><span aria-hidden="true">◌</span><p>{canPreview ? t("camera.placeholder") : mediaEnabled ? t("camera.unavailable") : t("camera.gate")}</p></div>
         )}
       </div>
       <div className="camera-actions">

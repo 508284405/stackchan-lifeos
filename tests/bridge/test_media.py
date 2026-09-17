@@ -7,13 +7,14 @@ import base64
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from starlette.requests import Request
 from fastapi.testclient import TestClient
 
 from bridge import Bridge, FakeTransport
 from bridge.api import create_app
 from bridge.domain import CommandState
-from bridge.media import CameraFrameStore
+from bridge.media import CameraFrame, CameraFrameError, CameraFrameStore, CameraViewerRegistry
 
 
 def setup_media_bridge():
@@ -122,6 +123,47 @@ def test_camera_new_begin_supersedes_an_incomplete_frame():
     assert frame.data == b"\xff\xd8\xff\xd9"
 
 
+def test_duplicate_display_ack_cannot_refresh_frame_freshness():
+    viewers = CameraViewerRegistry()
+    viewers.open(viewer_id="viewer-1", device_id="device-1", session_id="session-1", now_ms=10)
+    frame = CameraFrame(
+        device_id="device-1",
+        session_id="session-1",
+        frame_id="frame-1",
+        width=320,
+        height=240,
+        size=4,
+        capture_timestamp_ms=5,
+        capture_clock_id="clock-1",
+        received_at_ms=10,
+        token="frame-token",
+        data=b"\xff\xd8\xff\xd9",
+    )
+    viewers.deliver("viewer-1", frame, now_ms=11)
+    viewers.acknowledge_display(
+        viewer_id="viewer-1",
+        device_id="device-1",
+        session_id="session-1",
+        frame_id="frame-1",
+        token="frame-token",
+        visible=True,
+        now_ms=12,
+    )
+
+    with pytest.raises(CameraFrameError, match="duplicate frame"):
+        viewers.acknowledge_display(
+            viewer_id="viewer-1",
+            device_id="device-1",
+            session_id="session-1",
+            frame_id="frame-1",
+            token="frame-token",
+            visible=True,
+            now_ms=400,
+        )
+
+    assert viewers.get("viewer-1").displayed_at_ms == 12
+
+
 def test_camera_sequence_gap_resyncs_without_offlining_the_device():
     async def scenario():
         bridge, transport, device = setup_media_bridge()
@@ -147,6 +189,8 @@ def test_camera_sequence_gap_resyncs_without_offlining_the_device():
                     "height": 240,
                     "size": len(jpeg),
                     "chunk_count": 1,
+                    "capture_ts_ms": 1,
+                    "clock_id": transport.clock_id,
                 },
             },
         )
@@ -275,6 +319,8 @@ def test_camera_start_acceptance_uses_preview_lifetime_not_command_ttl():
                 "height": 240,
                 "size": len(jpeg),
                 "chunk_count": 1,
+                "capture_ts_ms": transport._device_clock_ms + 1,
+                "clock_id": transport.clock_id,
             },
         )
         await transport.emit(
@@ -293,6 +339,12 @@ def test_camera_start_acceptance_uses_preview_lifetime_not_command_ttl():
             payload={"frame_id": "frame-1", "size": len(jpeg)},
         )
         current = bridge.get_command(start.command_id)
+        bridge.camera_viewers.open(
+            viewer_id="viewer-command-lifetime",
+            device_id=device.device_id,
+            session_id=session.session_id,
+            now_ms=current.expires_at_ms + 31_000,
+        )
         bridge.expire_due(now_ms=current.expires_at_ms + 31_000)
         stable = bridge.get_command(start.command_id)
         assert bridge._active_camera_previews.get(device.device_id) == session.session_id
@@ -375,6 +427,8 @@ def test_camera_frame_with_missing_chunk_is_rejected_and_not_published():
                     "height": 240,
                     "size": 4,
                     "chunk_count": 2,
+                    "capture_ts_ms": 1,
+                    "clock_id": transport.clock_id,
                 },
             }
         )
@@ -413,6 +467,8 @@ def test_camera_preview_api_returns_mjpeg_parts_and_keeps_origin_boundary():
             if bridge.latest_camera_frame(device.device_id) is not None:
                 break
             await asyncio.sleep(0.05)
+        bridge.open_control_connection("viewer-mjpeg")
+        await bridge.open_camera_viewer(device.device_id, "viewer-mjpeg")
 
         app = create_app(bridge)
         route = next(item for item in app.routes if getattr(item, "path", "") == "/api/v1/devices/{device_id}/camera/stream")
@@ -423,7 +479,7 @@ def test_camera_preview_api_returns_mjpeg_parts_and_keeps_origin_boundary():
             "headers": [],
             "query_string": b"",
         })
-        response = await route.endpoint(device.device_id, request)
+        response = await route.endpoint(device.device_id, request, "viewer-mjpeg")
         first = await response.body_iterator.__anext__()
         await response.body_iterator.aclose()
         stopped = await bridge.submit_camera_preview(device.device_id, "stop")

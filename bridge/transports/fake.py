@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 from typing import Any
 from uuid import uuid4
 
@@ -40,6 +41,8 @@ class FakeTransport:
         hardware_id: str = "fake-hw-01",
         transport_id: str = "fake-usb-01",
         firmware_version: str = "fake-0.1.0",
+        firmware_boot_state: str = "legacy",
+        firmware_image_sha256: str = "0" * 64,
         capabilities: set[str] | frozenset[str] | None = None,
         hello_mode: str = "device_first",
         auto_ack: bool = True,
@@ -50,7 +53,9 @@ class FakeTransport:
         self.hardware_id = hardware_id
         self.transport_id = transport_id
         self.firmware_version = firmware_version
-        self.capabilities = frozenset(
+        self.firmware_boot_state = firmware_boot_state
+        self.firmware_image_sha256 = firmware_image_sha256
+        declared_capabilities = set(
             capabilities
             or {
                 "status",
@@ -67,6 +72,11 @@ class FakeTransport:
                 "camera",
             }
         )
+        if "camera" in declared_capabilities:
+            declared_capabilities.add("camera_capture_ts_v1")
+        if "manual_control_v1" in declared_capabilities:
+            declared_capabilities.add("manual_video_guard_v1")
+        self.capabilities = frozenset(declared_capabilities)
         self.auto_ack = auto_ack
         self.auto_complete = auto_complete
         self.response_delay_ms = response_delay_ms
@@ -84,11 +94,18 @@ class FakeTransport:
         self.connected = False
         self._receiver: ReceiveCallback | None = None
         self._device_seq = -1
+        self._device_clock_ms = 0
+        self.clock_id = f"fake-clock-{uuid4()}"
         self._device_hello_sent = False
         self._camera_task: asyncio.Task[None] | None = None
         self._camera_preview_active = False
         self._camera_fps = 10
         self._camera_frame_number = 0
+        self.camera_capture_age_ms = 0
+        self.camera_frozen = False
+        self.firmware_fail_action: str | None = None
+        self._firmware_manifest: dict[str, Any] | None = None
+        self._firmware_image = bytearray()
 
     def candidate(self) -> DiscoveryCandidate:
         return DiscoveryCandidate(
@@ -104,6 +121,7 @@ class FakeTransport:
         self.connected = True
         self._receiver = receiver
         self._device_seq = -1
+        self._device_clock_ms = 0
         self._device_hello_sent = False
         if self.hello_mode == "device_first":
             await self._emit_device_hello()
@@ -172,6 +190,39 @@ class FakeTransport:
                     await asyncio.gather(self._camera_task, return_exceptions=True)
                     self._camera_task = None
             return
+        if envelope.get("type") == "command.firmware_update":
+            payload = envelope.get("payload", {})
+            action = payload.get("action")
+            if self.firmware_fail_action == action:
+                await self._ack(envelope, "rejected", error_code="internal")
+                return
+            if action == "begin":
+                self._firmware_manifest = dict(payload)
+                self._firmware_image = bytearray()
+            elif action == "chunk":
+                if self._firmware_manifest is None or payload.get("offset") != len(self._firmware_image):
+                    await self._ack(envelope, "rejected", error_code="invalid_schema")
+                    return
+                try:
+                    self._firmware_image.extend(base64.b64decode(payload.get("data", ""), validate=True))
+                except (ValueError, TypeError):
+                    await self._ack(envelope, "rejected", error_code="invalid_schema")
+                    return
+            elif action == "commit":
+                manifest = self._firmware_manifest or {}
+                if (
+                    len(self._firmware_image) != manifest.get("size_bytes")
+                    or hashlib.sha256(self._firmware_image).hexdigest() != manifest.get("sha256_hex")
+                ):
+                    await self._ack(envelope, "rejected", error_code="invalid_schema")
+                    return
+                self.firmware_version = str(manifest.get("version"))
+                self.firmware_image_sha256 = str(manifest.get("sha256_hex"))
+            else:
+                await self._ack(envelope, "rejected", error_code="unsupported")
+                return
+            await self._ack(envelope, "completed")
+            return
         await self._ack(envelope, "accepted")
         if self.auto_complete:
             await self.emit(
@@ -213,7 +264,11 @@ class FakeTransport:
             type="hello.device",
             payload={
                 "firmware": self.firmware_version,
+                "firmware_image_version": self.firmware_version,
+                "firmware_boot_state": self.firmware_boot_state,
+                "firmware_image_sha256": self.firmware_image_sha256,
                 "hardware_id": self.hardware_id,
+                "clock_id": self.clock_id,
                 "protocol_versions": ["lifeos.v1"],
                 "capabilities": sorted(self.capabilities),
                 "safety": {"hard_stop": True, "max_command_age_ms": 1500},
@@ -223,9 +278,13 @@ class FakeTransport:
 
     async def _camera_loop(self) -> None:
         while self.connected and self._camera_preview_active:
+            if self.camera_frozen:
+                await asyncio.sleep(1 / self._camera_fps)
+                continue
             self._camera_frame_number += 1
             frame_id = f"fake-frame-{self._camera_frame_number}"
             encoded = base64.b64encode(_FAKE_JPEG).decode("ascii")
+            capture_ts_ms = max(0, self._device_clock_ms + 1 - self.camera_capture_age_ms)
             await self.emit(
                 kind="event",
                 type="camera.frame.begin",
@@ -236,6 +295,8 @@ class FakeTransport:
                     "height": 240,
                     "size": len(_FAKE_JPEG),
                     "chunk_count": 1,
+                    "capture_ts_ms": capture_ts_ms,
+                    "clock_id": self.clock_id,
                 },
             )
             await self.emit(
@@ -266,6 +327,7 @@ class FakeTransport:
         if not self.connected or self._receiver is None:
             raise TransportError("fake transport is disconnected")
         self._device_seq += 1
+        self._device_clock_ms += 1
         frame: dict[str, Any] = {
             "schema": "lifeos.v1",
             "kind": kind,
@@ -273,7 +335,7 @@ class FakeTransport:
             "event_id": f"fake-{uuid4()}",
             "device_id": self.device_id,
             "seq": self._device_seq,
-            "ts_ms": self._device_seq,
+            "ts_ms": self._device_clock_ms,
             "payload": payload,
         }
         if correlation_id is not None:

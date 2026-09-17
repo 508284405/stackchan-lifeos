@@ -375,7 +375,8 @@ ParseError parse_manual_control_payload(const Envelope& envelope,
   const auto payload = envelope.payload.view();
   if (!object_keys_allowed(
           payload,
-          std::array<std::string_view, 5>{"lease_id", "input_seq", "action", "direction", "ttl_ms"})) {
+          std::array<std::string_view, 7>{"lease_id", "input_seq", "action", "direction", "ttl_ms",
+                                          "video_frame_id", "video_capture_ts_ms"})) {
     return ParseError::InvalidPayload;
   }
   Span span;
@@ -392,6 +393,14 @@ ParseError parse_manual_control_payload(const Envelope& envelope,
   }
   if (action.view() == "input") {
     output.action = ManualAction::Input;
+    if (!field(payload, "video_frame_id", span) ||
+        !copy_text(payload, span, output.video_frame_id) ||
+        output.video_frame_id.size == 0 ||
+        !field(payload, "video_capture_ts_ms", span) ||
+        !number(payload, span, output.video_capture_ts_ms)) {
+      return ParseError::InvalidPayload;
+    }
+    output.has_video_proof = true;
     if (!field(payload, "direction", span) || span.end <= span.begin + 1 ||
         payload[span.begin] != '{' || payload[span.end - 1] != '}') {
       return ParseError::InvalidPayload;
@@ -412,8 +421,13 @@ ParseError parse_manual_control_payload(const Envelope& envelope,
   if (action.view() == "release") {
     output.action = ManualAction::Release;
     Span direction_span{};
-    if (field(payload, "direction", direction_span)) return ParseError::InvalidPayload;
+    if (field(payload, "direction", direction_span) ||
+        field(payload, "video_frame_id", direction_span) ||
+        field(payload, "video_capture_ts_ms", direction_span)) {
+      return ParseError::InvalidPayload;
+    }
     output.has_direction = false;
+    output.has_video_proof = false;
     (void)now_ms;
     return ParseError::None;
   }

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import re
@@ -27,6 +29,8 @@ from .domain import (
     DeviceSession,
     DiscoveryCandidate,
     LeaseState,
+    MaintenanceTaskState,
+    RolloutTaskState,
     SessionState,
     TERMINAL_COMMAND_STATES,
     transition_command,
@@ -36,12 +40,20 @@ from .domain import (
 )
 from .errors import CapabilityUnavailable, ConflictError, NotFoundError, ProtocolError, TransportError, ValidationError
 from .events import EventLog
+from .firmware_artifacts import FirmwareArtifactStore
 from .intent import build_intent_payload, validate_behavior, validate_speech
 from .leases import ControlLeaseManager
 from .maintenance import MaintenanceManager
 from .rollouts import RolloutManager
 from .diagnostics import export_diagnostics
-from .media import CameraFrame, CameraFrameError, CameraFrameStore
+from .media import (
+    MAX_MANUAL_CAPTURE_AGE_MS,
+    CameraFrame,
+    CameraFrameError,
+    CameraFrameStore,
+    CameraViewerRegistry,
+    SessionClockMapper,
+)
 from .persistence import SQLiteStore
 from .registry import DeviceRegistry
 from .sessions import SessionManager
@@ -58,14 +70,17 @@ CAMERA_PREVIEW_FIRST_FRAME_TTL_S = 10.0
 CAMERA_PREVIEW_COMMAND_TTL_MS = int(CAMERA_PREVIEW_FIRST_FRAME_TTL_S * 1000)
 CAMERA_HOST_HEARTBEAT_INTERVAL_S = 0.5
 CAMERA_PREVIEW_STOP_WAIT_S = 1.0
+CAMERA_LAST_VIEWER_GRACE_S = 2.0
+CAMERA_VIEWER_IDLE_MS = 2_000
 MANUAL_CONTROL_ACK_WAIT_S = 0.35
-BRIDGE_SUPERVISOR_INTERVAL_S = 0.25
+BRIDGE_SUPERVISOR_INTERVAL_S = 0.1
 MAX_EVENT_ID_LENGTH = 96
 MAX_DEVICE_ID_LENGTH = 64
 MAX_TYPE_LENGTH = 64
 MAX_COMMAND_PARAMS_BYTES = 8 * 1024
 MAX_INTENT_TTL_MS = 30_000
 TYPE_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z0-9_]+)+$")
+SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 WIRE_KINDS = {"event", "command", "ack", "error", "hello"}
 _HEALTH_PAYLOAD_KEYS = frozenset(
     {
@@ -124,6 +139,7 @@ _CAPABILITY_ALLOWLIST = frozenset(
         "protocol",
         "emergency_stop",
         "manual_control_v1",
+        "manual_video_guard_v1",
         "manual_preflight_v1",
         "behavior",
         "speech",
@@ -133,11 +149,13 @@ _CAPABILITY_ALLOWLIST = frozenset(
         "servo_yaw",
         "servo_pitch",
         "camera",
+        "camera_capture_ts_v1",
         "health",
         "audio",
         "maintenance_confirmation",
         "maintenance_execute",
         "firmware_rollout",
+        "firmware_update_v1",
     }
 )
 
@@ -164,6 +182,7 @@ class Bridge:
         feature_gates: dict[str, bool] | None = None,
         event_log: EventLog | None = None,
         camera_preview_fps: int = CAMERA_PREVIEW_FPS,
+        firmware_artifacts: FirmwareArtifactStore | None = None,
     ) -> None:
         if not isinstance(camera_preview_fps, int) or isinstance(camera_preview_fps, bool) or not 1 <= camera_preview_fps <= CAMERA_PREVIEW_FPS:
             raise ValueError("camera_preview_fps must be an integer in [1, 10]")
@@ -173,6 +192,7 @@ class Bridge:
         self._clock_ms = clock_ms or (lambda: time.monotonic_ns() // 1_000_000)
         self._now = now_factory or utc_now
         self.camera_preview_fps = camera_preview_fps
+        self.firmware_artifacts = firmware_artifacts
         self.events = event_log or EventLog()
         self.leases = ControlLeaseManager(now_factory=self._now)
         self.feature_gates = {
@@ -188,6 +208,10 @@ class Bridge:
             # camera/manual hand-off as the safe default for every other
             # Bridge instance.
             "manual_camera_preview": False,
+            # Deterministic unit fixtures may exercise the lease state machine
+            # without media. This switch is rejected for non-fake transports
+            # and must never be used by a deployable launcher.
+            "test_manual_without_video": False,
             "behavior": False,
             "speech": False,
             "maintenance": False,
@@ -199,6 +223,15 @@ class Bridge:
         }
         if feature_gates:
             self.feature_gates.update(feature_gates)
+        if self.feature_gates.get("manual_camera_preview", False) and (
+            not self.feature_gates.get("manual_control_v1", False)
+            or not self.feature_gates.get("media", False)
+        ):
+            raise ValueError(
+                "manual_camera_preview requires manual_control_v1 and media"
+            )
+        if self.feature_gates.get("firmware_rollout", False) and self.firmware_artifacts is None:
+            raise ValueError("firmware_rollout requires a provisioned artifact store and trust key")
         self._transports: dict[str, DeviceTransport] = {}
         self._active_sessions: dict[str, str] = {}
         self._device_locks: dict[str, asyncio.Lock] = {}
@@ -218,9 +251,17 @@ class Bridge:
         self._supervisor_task: asyncio.Task[None] | None = None
         self._supervisor_stopping = False
         self._latest_health: dict[str, dict[str, Any]] = {}
+        self._firmware_image_sha256: dict[str, str] = {}
         self.camera_frames = CameraFrameStore()
+        self.camera_clock = SessionClockMapper()
+        self.camera_viewers = CameraViewerRegistry()
+        self._device_clock_ids: dict[str, str] = {}
+        self._clock_probes: dict[str, tuple[str, int]] = {}
+        self._control_connections: set[str] = set()
+        self._manual_release_inflight: set[str] = set()
         self._active_camera_previews: dict[str, str] = {}
         self._camera_heartbeat_tasks: dict[str, asyncio.Task[None]] = {}
+        self._camera_stop_grace_tasks: dict[str, asyncio.Task[None]] = {}
         self.maintenance = MaintenanceManager(
             self.store,
             feature_enabled=lambda: self.feature_gates["maintenance"],
@@ -230,12 +271,44 @@ class Bridge:
         self.rollouts = RolloutManager(self.store, feature_enabled=lambda: self.feature_gates["firmware_rollout"], now=self._now)
         self._recover_state()
 
-    def prepare_maintenance(self, device_id: str, operation: str, *, ttl_ms: int = 60_000):
+    async def prepare_maintenance(
+        self,
+        device_id: str,
+        operation: str,
+        *,
+        ttl_ms: int = 60_000,
+        context: dict[str, Any] | None = None,
+    ):
         session = self._active_session(device_id)
         if session is None:
             raise CapabilityUnavailable("no_online_session", "maintenance_confirmation")
-        return self.maintenance.prepare(device_id, session.session_id, operation, ttl_ms=ttl_ms,
-                                        capabilities=session.capabilities)
+        task = self.maintenance.prepare(
+            device_id,
+            session.session_id,
+            operation,
+            ttl_ms=ttl_ms,
+            capabilities=session.capabilities,
+            context=context,
+        )
+        prepare_params = {
+            "challenge_id": task.challenge_id,
+            "operation": task.operation,
+            "valid_for_ms": ttl_ms,
+            **task.context,
+        }
+        command = await self.submit_command(
+            device_id,
+            "maintenance.prepare",
+            params=prepare_params,
+            source=CommandSource.MAINTENANCE,
+            ttl_ms=1_500,
+            idempotency_key=f"maintenance-prepare:{task.task_id}",
+            correlation_id=task.task_id,
+        )
+        command = await self._wait_for_terminal_command(command.command_id, timeout_s=1.0)
+        if command.state not in {CommandState.ACCEPTED, CommandState.COMPLETED}:
+            self.maintenance.expire(task.task_id, reason="device_prepare_rejected")
+        return self.maintenance.get(task.task_id)
 
     def confirm_maintenance(
         self,
@@ -247,7 +320,7 @@ class Bridge:
         result: str,
         valid_for_ms: int,
     ):
-        return self.maintenance.confirm(
+        task = self.maintenance.confirm(
             challenge_id,
             device_id=device_id,
             session_id=session_id,
@@ -255,14 +328,42 @@ class Bridge:
             result=result,
             valid_for_ms=valid_for_ms,
         )
+        for rollout in self.rollouts.list():
+            if rollout.confirmation_task_id == task.task_id:
+                rollout.preconditions["local_confirmation"] = True
+                self.rollouts._save(rollout)
+        return task
 
-    def execute_maintenance(self, task_id: str):
+    async def execute_maintenance(self, task_id: str):
         task = self.maintenance.get(task_id)
         session = self._active_session(task.device_id)
         if session is None or session.session_id != task.session_id:
             self.maintenance.expire(task_id, reason="session_changed")
             raise ConflictError("maintenance task session is no longer current")
-        return self.maintenance.execute(task_id, capabilities=session.capabilities if session else frozenset())
+        task = self.maintenance.begin_execute(
+            task_id,
+            capabilities=session.capabilities if session else frozenset(),
+        )
+        if task.state is not MaintenanceTaskState.EXECUTING:
+            return task
+        command = await self.submit_command(
+            task.device_id,
+            "maintenance.execute",
+            params={
+                "challenge_id": task.challenge_id,
+                "operation": task.operation,
+            },
+            source=CommandSource.MAINTENANCE,
+            ttl_ms=1_500,
+            idempotency_key=f"maintenance-execute:{task.task_id}",
+            correlation_id=task.task_id,
+        )
+        command = await self._wait_for_terminal_command(command.command_id, timeout_s=1.0)
+        return self.maintenance.finish_execute(
+            task.task_id,
+            completed=command.state is CommandState.COMPLETED,
+            reason=(command.error or {}).get("reason") or command.state.value,
+        )
 
     def get_maintenance_task(self, task_id: str):
         return self.maintenance.get(task_id)
@@ -290,14 +391,231 @@ class Bridge:
         self.registry.get(device_id)
         return self.rollouts.create(device_id, image_ref)
 
-    def preflight_rollout(self, task_id: str, checks: dict[str, bool] | None = None):
-        return self.rollouts.preflight(task_id, checks=checks)
+    async def preflight_rollout(self, task_id: str, checks: dict[str, bool] | None = None):
+        if checks:
+            raise ValidationError("rollout preflight does not accept caller-asserted checks")
+        task = self.rollouts.get(task_id)
+        if self.firmware_artifacts is None:
+            raise CapabilityUnavailable("trust_not_provisioned", "firmware_rollout")
+        session = self._active_session(task.device_id)
+        if session is None:
+            raise ConflictError("firmware rollout requires an online session")
+        artifact = self.firmware_artifacts.resolve(task.image_ref)
+        verified = self.rollouts.preflight(
+            task_id,
+            artifact=artifact,
+            device=self.registry.get(task.device_id),
+            session=session,
+            previous_sha256=self._firmware_image_sha256.get(task.device_id),
+        )
+        if verified.state is not RolloutTaskState.READY:
+            return verified
+        try:
+            confirmation = await self.prepare_maintenance(
+                task.device_id,
+                "firmware_update",
+                ttl_ms=300_000,
+                context={
+                    "rollout_id": task.task_id,
+                    "sha256_hex": artifact.manifest.sha256_hex,
+                },
+            )
+        except (CapabilityUnavailable, ConflictError, ValidationError) as exc:
+            return self.rollouts.reject_ready(task_id, reason=str(exc))
+        verified.confirmation_task_id = confirmation.task_id
+        verified.preconditions["local_confirmation"] = (
+            confirmation.state is MaintenanceTaskState.CONFIRMED
+        )
+        return self.rollouts._save(verified)
 
-    def execute_rollout(self, task_id: str):
-        return self.rollouts.execute(task_id)
+    async def execute_rollout(self, task_id: str):
+        pending = self.rollouts.get(task_id)
+        if pending.confirmation_task_id is None:
+            raise ConflictError("firmware rollout has no device-local confirmation challenge")
+        confirmation = self.maintenance.get(pending.confirmation_task_id)
+        if confirmation.state is not MaintenanceTaskState.CONFIRMED:
+            raise ConflictError("firmware rollout is awaiting device-local confirmation")
+        task = self.rollouts.start(task_id)
+        assert self.firmware_artifacts is not None
+        artifact = self.firmware_artifacts.resolve(task.image_ref)
+        pause = await self.submit_command(
+            task.device_id,
+            "control.pause",
+            params={"reason": "firmware_update"},
+            source=CommandSource.SYSTEM,
+            ttl_ms=1_500,
+            idempotency_key=f"rollout-pause:{task.task_id}",
+            correlation_id=task.task_id,
+        )
+        pause = await self._wait_for_terminal_command(pause.command_id, timeout_s=1.5)
+        if pause.state is not CommandState.COMPLETED:
+            return self.rollouts.fail(task_id, reason="safe_stop_not_confirmed")
+
+        async def send(action: str, payload: dict[str, Any], sequence: int) -> CommandRecord:
+            command = await self.submit_command(
+                task.device_id,
+                f"firmware.{action}",
+                params=payload,
+                source=CommandSource.SYSTEM,
+                ttl_ms=10_000,
+                idempotency_key=f"rollout:{task.task_id}:{sequence}",
+                correlation_id=task.task_id,
+            )
+            return await self._wait_for_terminal_command(command.command_id, timeout_s=10.0)
+
+        begin_payload = artifact.manifest.wire_payload(rollout_id=task.task_id)
+        begin_payload["confirmation_challenge_id"] = confirmation.challenge_id
+        self.maintenance.consume_confirmation(confirmation.task_id)
+        begin = await send("begin", begin_payload, 0)
+        if begin.state is not CommandState.COMPLETED:
+            return self.rollouts.fail(task_id, reason="device_rejected_signed_manifest")
+        sequence = 1
+        for offset, data in artifact.read_chunks():
+            chunk = await send(
+                "chunk",
+                {
+                    "action": "chunk",
+                    "rollout_id": task.task_id,
+                    "offset": offset,
+                    "data": base64.b64encode(data).decode("ascii"),
+                },
+                sequence,
+            )
+            if chunk.state is not CommandState.COMPLETED:
+                return self.rollouts.fail(task_id, reason=f"device_write_failed_at_{offset}")
+            self.rollouts.note_bytes_sent(task_id, offset + len(data))
+            sequence += 1
+        commit = await send(
+            "commit",
+            {"action": "commit", "rollout_id": task.task_id},
+            sequence,
+        )
+        if commit.state not in {CommandState.COMPLETED, CommandState.OFFLINE, CommandState.TIMEOUT}:
+            return self.rollouts.fail(task_id, reason="device_commit_rejected")
+        return self.rollouts.await_confirmation(task_id)
 
     def get_rollout(self, task_id: str):
         return self.rollouts.get(task_id)
+
+    def create_rollout_batch(self, artifact_refs: dict[str, str]) -> BatchTask:
+        device_ids = list(artifact_refs)
+        if (
+            not isinstance(artifact_refs, dict)
+            or not device_ids
+            or len(device_ids) > 200
+            or len(set(device_ids)) != len(device_ids)
+            or not all(isinstance(device_id, str) and device_id for device_id in device_ids)
+        ):
+            raise ValidationError("rollout batch requires 1..200 device-to-artifact mappings")
+        targets: list[BatchTarget] = []
+        for device_id in device_ids:
+            self.registry.get(device_id)
+            image_ref = artifact_refs[device_id]
+            rollout = self.rollouts.create(device_id, image_ref)
+            targets.append(
+                BatchTarget(
+                    device_id=device_id,
+                    result={"rollout_task_id": rollout.task_id},
+                )
+            )
+        task = BatchTask(
+            task_id=f"frb-{uuid4()}",
+            command_type="firmware.rollout",
+            params={"artifact_refs": dict(artifact_refs)},
+            targets=targets,
+            aggregate_state=BatchState.PENDING,
+            correlation_id=f"firmware-batch-{uuid4()}",
+        )
+        self.store.save_batch(task)
+        self._audit(
+            AuditKind.BATCH_STATE_CHANGED,
+            correlation_id=task.correlation_id,
+            payload={"task_id": task.task_id, "state": task.aggregate_state.value},
+        )
+        return task
+
+    def get_rollout_batch(self, task_id: str) -> BatchTask:
+        task = self.store.get_batch(task_id)
+        if task is None or task.command_type != "firmware.rollout":
+            raise NotFoundError(f"firmware rollout batch not found: {task_id}")
+        return task
+
+    def _save_rollout_batch(self, task: BatchTask) -> BatchTask:
+        self.store.save_batch(task)
+        self._audit(
+            AuditKind.BATCH_STATE_CHANGED,
+            correlation_id=task.correlation_id,
+            payload={"task_id": task.task_id, "state": task.aggregate_state.value},
+        )
+        return task
+
+    async def resume_rollout_batch(self, task_id: str) -> BatchTask:
+        task = self.get_rollout_batch(task_id)
+        if task.aggregate_state in TERMINAL_BATCH_STATES:
+            raise ConflictError("firmware rollout batch is already terminal")
+        # Reconcile the previous target before starting any new target.
+        for target in task.targets:
+            rollout_id = (target.result or {}).get("rollout_task_id")
+            rollout = self.rollouts.get(rollout_id)
+            if target.state is BatchTargetState.AWAITING_CONFIRMATION:
+                if rollout.state is RolloutTaskState.COMPLETED:
+                    target.state = BatchTargetState.COMPLETED
+                    target.result = {**(target.result or {}), "rollout": rollout.to_dict()}
+                    target.finished_at = self._now()
+                elif rollout.state is RolloutTaskState.RECOVERED:
+                    target.state = BatchTargetState.RECOVERED
+                    target.result = {**(target.result or {}), "rollout": rollout.to_dict()}
+                    target.finished_at = self._now()
+                elif rollout.state is RolloutTaskState.FAILED:
+                    target.state = BatchTargetState.FAILED
+                    target.error = rollout.error
+                    target.finished_at = self._now()
+                else:
+                    task.aggregate_state = BatchState.PAUSED
+                    return self._save_rollout_batch(task)
+
+        transition_batch(task.aggregate_state, BatchState.RUNNING)
+        task.aggregate_state = BatchState.RUNNING
+        self._save_rollout_batch(task)
+        target = next((item for item in task.targets if item.state is BatchTargetState.PENDING), None)
+        if target is None:
+            failed = any(
+                item.state in {BatchTargetState.FAILED, BatchTargetState.RECOVERED}
+                for item in task.targets
+            )
+            final = BatchState.PARTIAL if failed else BatchState.COMPLETED
+            transition_batch(task.aggregate_state, final)
+            task.aggregate_state = final
+            return self._save_rollout_batch(task)
+
+        rollout_id = (target.result or {})["rollout_task_id"]
+        target.state = BatchTargetState.RUNNING
+        self._save_rollout_batch(task)
+        try:
+            preflight = await self.preflight_rollout(rollout_id)
+            if preflight.state is not RolloutTaskState.READY:
+                target.state = BatchTargetState.FAILED
+                target.error = preflight.error
+                target.finished_at = self._now()
+            else:
+                rollout = await self.execute_rollout(rollout_id)
+                if rollout.state is RolloutTaskState.AWAITING_CONFIRMATION:
+                    target.state = BatchTargetState.AWAITING_CONFIRMATION
+                    target.result = {**(target.result or {}), "rollout": rollout.to_dict()}
+                elif rollout.state is RolloutTaskState.COMPLETED:
+                    target.state = BatchTargetState.COMPLETED
+                    target.finished_at = self._now()
+                else:
+                    target.state = BatchTargetState.FAILED
+                    target.error = rollout.error
+                    target.finished_at = self._now()
+        except (CapabilityUnavailable, ConflictError, NotFoundError, ValidationError) as exc:
+            target.state = BatchTargetState.FAILED
+            target.error = {"code": "failed", "reason": str(exc)}
+            target.finished_at = self._now()
+        transition_batch(task.aggregate_state, BatchState.PAUSED)
+        task.aggregate_state = BatchState.PAUSED
+        return self._save_rollout_batch(task)
 
     def _recover_state(self) -> None:
         """Make restart semantics explicit: sessions renegotiate, actions expire."""
@@ -433,12 +751,18 @@ class Bridge:
             await asyncio.gather(task, return_exceptions=True)
         for device_id in list(self._camera_heartbeat_tasks):
             await self._stop_camera_host_heartbeat(device_id)
+        for task in self._camera_stop_grace_tasks.values():
+            task.cancel()
+        if self._camera_stop_grace_tasks:
+            await asyncio.gather(*self._camera_stop_grace_tasks.values(), return_exceptions=True)
+        self._camera_stop_grace_tasks.clear()
 
     async def _supervisor_loop(self, interval_s: float) -> None:
         loop = asyncio.get_running_loop()
         while True:
             self.expire_due()
             self.reap_control_leases()
+            await self.enforce_manual_video_freshness()
             # Older firmware does not advertise periodic health reports. Its
             # transport is still kept alive by host heartbeat, while newer
             # health-capable firmware gets strict freshness transitions.
@@ -648,6 +972,15 @@ class Bridge:
         for lease in self.leases.invalidate_session(session.session_id, reason=reason):
             self._audit_lease(lease)
         self.maintenance.expire_for_session(session.session_id, reason=reason)
+        self.rollouts.mark_session_lost(session.device_id, reason=reason)
+        self.camera_clock.invalidate_session(session.session_id)
+        self.camera_viewers.invalidate_session(session.session_id)
+        self._device_clock_ids.pop(session.session_id, None)
+        self._clock_probes = {
+            event_id: probe
+            for event_id, probe in self._clock_probes.items()
+            if probe[0] != session.session_id
+        }
         self._deactivate_camera_preview(session.device_id, session.session_id)
         self._mark_device_commands_unavailable(session, reason=reason)
 
@@ -658,7 +991,11 @@ class Bridge:
         if active_session_id is None or (session_id is not None and active_session_id != session_id):
             return
         self._active_camera_previews.pop(device_id, None)
+        grace = self._camera_stop_grace_tasks.pop(device_id, None)
+        if grace is not None and grace is not asyncio.current_task():
+            grace.cancel()
         self.camera_frames.invalidate_session(device_id, active_session_id)
+        self.camera_viewers.invalidate_session(active_session_id)
         heartbeat = self._camera_heartbeat_tasks.pop(device_id, None)
         if heartbeat is not None and heartbeat is not asyncio.current_task():
             heartbeat.cancel()
@@ -935,6 +1272,10 @@ class Bridge:
             self._receive_completion(session, frame)
             return True
         if frame["kind"] == "error":
+            try:
+                self._observe_clock_probe(session, frame)
+            except CameraFrameError:
+                self.camera_clock.invalidate_session(session.session_id)
             self._receive_error(session, frame)
             return True
         return True
@@ -969,14 +1310,32 @@ class Bridge:
         versions = payload.get("protocol_versions")
         capabilities = payload.get("capabilities", [])
         firmware = payload.get("firmware")
+        firmware_image_version = payload.get("firmware_image_version")
+        firmware_boot_state = payload.get("firmware_boot_state")
+        firmware_image_sha256 = payload.get("firmware_image_sha256")
         hardware_id = payload.get("hardware_id") or payload.get("mac")
+        clock_id = payload.get("clock_id")
         if (
             not isinstance(versions, list)
             or "lifeos.v1" not in versions
             or not isinstance(capabilities, list)
             or not all(isinstance(value, str) for value in capabilities)
             or (firmware is not None and not isinstance(firmware, str))
+            or (firmware_image_version is not None and not isinstance(firmware_image_version, str))
+            or (
+                firmware_boot_state is not None
+                and firmware_boot_state not in {"valid", "pending_verify", "rolled_back", "legacy"}
+            )
+            or (
+                firmware_image_sha256 is not None
+                and (
+                    not isinstance(firmware_image_sha256, str)
+                    or SHA256_RE.fullmatch(firmware_image_sha256) is None
+                )
+            )
             or (hardware_id is not None and not isinstance(hardware_id, str))
+            or (clock_id is not None and not isinstance(clock_id, str))
+            or ("camera_capture_ts_v1" in capabilities and clock_id is None)
         ):
             transition_session(session.state, SessionState.REJECTED)
             session.state = SessionState.REJECTED
@@ -1004,6 +1363,16 @@ class Bridge:
 
         self.sessions.remember_event(session, self._event_key(frame))
         accepted_capabilities = frozenset(capabilities) & _CAPABILITY_ALLOWLIST
+        if "camera_capture_ts_v1" in accepted_capabilities and clock_id is not None:
+            try:
+                self._device_clock_ids[session.session_id] = SessionClockMapper.validate_clock_id(clock_id)
+                self._observe_clock_probe(session, frame)
+            except CameraFrameError:
+                accepted_capabilities = frozenset(
+                    capability
+                    for capability in accepted_capabilities
+                    if capability != "camera_capture_ts_v1"
+                )
         session.capabilities = accepted_capabilities
         session.last_heartbeat_at = self._now()
         transition_session(session.state, SessionState.ONLINE)
@@ -1011,12 +1380,20 @@ class Bridge:
         self.sessions.save(session)
         self.registry.update_from_hello(
             session.device_id,
-            firmware_version=firmware,
+            firmware_version=firmware_image_version or firmware,
             protocol_version="lifeos.v1",
             capabilities=accepted_capabilities,
             transport_id=session.transport_id,
         )
         self.registry.mark_seen(session.device_id, seen_at=self._now())
+        if firmware_image_sha256 is not None:
+            self._firmware_image_sha256[session.device_id] = firmware_image_sha256
+        self.rollouts.reconcile_device(
+            session.device_id,
+            firmware_version=firmware_image_version or firmware,
+            firmware_sha256=firmware_image_sha256,
+            local_boot_state=firmware_boot_state,
+        )
         self._audit(
             AuditKind.SESSION_CHANGED,
             device_id=session.device_id,
@@ -1028,6 +1405,38 @@ class Bridge:
             },
         )
         return await self._send_host_hello(session)
+
+    def _observe_clock_probe(self, session: DeviceSession, frame: dict[str, Any]) -> None:
+        """Consume one request/response sample; duplicates cannot refresh it."""
+
+        correlation_id = frame.get("correlation_id")
+        if not isinstance(correlation_id, str):
+            return
+        probe = self._clock_probes.pop(correlation_id, None)
+        clock_id = self._device_clock_ids.get(session.session_id)
+        if probe is None or clock_id is None or probe[0] != session.session_id:
+            return
+        self.camera_clock.observe_round_trip(
+            session_id=session.session_id,
+            clock_id=clock_id,
+            host_sent_ms=probe[1],
+            host_received_ms=self._clock_ms(),
+            device_sent_ms=frame["ts_ms"],
+        )
+
+    def _record_clock_probe(self, session: DeviceSession, envelope: dict[str, Any]) -> None:
+        event_id = envelope.get("event_id")
+        sent_ms = envelope.get("ts_ms")
+        if isinstance(event_id, str) and isinstance(sent_ms, int) and not isinstance(sent_ms, bool):
+            cutoff = self._clock_ms() - 5_000
+            self._clock_probes = {
+                existing_id: probe
+                for existing_id, probe in self._clock_probes.items()
+                if probe[1] >= cutoff
+            }
+            while len(self._clock_probes) >= 256:
+                self._clock_probes.pop(next(iter(self._clock_probes)))
+            self._clock_probes[event_id] = (session.session_id, sent_ms)
 
     async def _receive_camera_frame(self, session: DeviceSession, frame: dict[str, Any]) -> bool:
         """Consume one bounded JPEG frame event without retaining wire chunks."""
@@ -1050,8 +1459,15 @@ class Bridge:
                     "height",
                     "size",
                     "chunk_count",
+                    "capture_ts_ms",
+                    "clock_id",
                 } or payload.get("format") != "jpeg":
                     raise CameraFrameError("invalid camera frame begin")
+                if payload["capture_ts_ms"] > frame["ts_ms"]:
+                    raise CameraFrameError("camera capture timestamp is after frame emission")
+                clock_id = self._device_clock_ids.get(session.session_id)
+                if clock_id is None or payload["clock_id"] != clock_id:
+                    raise CameraFrameError("camera frame clock does not match the negotiated session clock")
                 self.camera_frames.begin(
                     device_id=session.device_id,
                     session_id=session.session_id,
@@ -1060,7 +1476,9 @@ class Bridge:
                     height=payload["height"],
                     size=payload["size"],
                     chunk_count=payload["chunk_count"],
-                    timestamp_ms=frame["ts_ms"],
+                    capture_timestamp_ms=payload["capture_ts_ms"],
+                    capture_clock_id=payload["clock_id"],
+                    received_at_ms=self._clock_ms(),
                 )
                 return True
             if frame["type"] == "camera.frame.chunk":
@@ -1179,6 +1597,7 @@ class Bridge:
                 }
                 self._host_hello_envelopes[session.session_id] = host_hello
             try:
+                self._record_clock_probe(session, host_hello)
                 await transport.send(host_hello)
             except (TransportError, ConnectionError, OSError) as exc:
                 await self._fail_transport(session, str(exc))
@@ -1210,6 +1629,12 @@ class Bridge:
                 payload={"reason": "ack_missing_command_id"},
             )
             return
+        try:
+            self._observe_clock_probe(session, frame)
+        except CameraFrameError:
+            # A malformed or impossible clock sample disables freshness until
+            # another authenticated command/ACK round trip succeeds.
+            self.camera_clock.invalidate_session(session.session_id)
         command = self.store.get_command(command_id)
         if command is None or command.session_id != session.session_id:
             self._audit(
@@ -1236,6 +1661,11 @@ class Bridge:
                     "camera.preview.stop",
                     "control.preflight",
                     "manual_control",
+                    "maintenance.prepare",
+                    "maintenance.execute",
+                    "firmware.begin",
+                    "firmware.chunk",
+                    "firmware.commit",
                 }
                 else CommandState.ACCEPTED
             )
@@ -1445,6 +1875,98 @@ class Bridge:
                 payload=payload,
                 required_capability="camera",
                 required_feature="media",
+            )
+        elif command_type in {"maintenance.prepare", "maintenance.execute"}:
+            operation = params.get("operation")
+            if command_type.endswith("prepare") and operation == "firmware_update":
+                expected = {"challenge_id", "operation", "valid_for_ms", "rollout_id", "sha256_hex"}
+            elif command_type.endswith("prepare"):
+                expected = {"challenge_id", "operation", "valid_for_ms"}
+            else:
+                expected = {"challenge_id", "operation"}
+            if set(params) != expected:
+                raise ValidationError("maintenance command fields do not match the registered operation")
+            challenge_id = params.get("challenge_id")
+            if (
+                not isinstance(challenge_id, str)
+                or not 1 <= len(challenge_id) <= 96
+                or operation not in {"factory_reset", "firmware_update"}
+            ):
+                raise ValidationError("maintenance challenge or operation is invalid")
+            payload = {
+                "action": "prepare" if command_type.endswith("prepare") else "execute",
+                "challenge_id": challenge_id,
+                "operation": operation,
+            }
+            if command_type.endswith("prepare"):
+                valid_for_ms = params.get("valid_for_ms")
+                if (
+                    not isinstance(valid_for_ms, int)
+                    or isinstance(valid_for_ms, bool)
+                    or not 1 <= valid_for_ms <= 300_000
+                ):
+                    raise ValidationError("maintenance confirmation lifetime is invalid")
+                payload["valid_for_ms"] = valid_for_ms
+                if operation == "firmware_update":
+                    rollout_id = params.get("rollout_id")
+                    sha256_hex = params.get("sha256_hex")
+                    if (
+                        not isinstance(rollout_id, str)
+                        or not 1 <= len(rollout_id) <= 96
+                        or not isinstance(sha256_hex, str)
+                        or SHA256_RE.fullmatch(sha256_hex) is None
+                    ):
+                        raise ValidationError("firmware maintenance binding is invalid")
+                    payload.update({"rollout_id": rollout_id, "sha256_hex": sha256_hex})
+            return MappedCommand(
+                wire_type="command.maintenance",
+                payload=payload,
+                required_capability=(
+                    "maintenance_confirmation"
+                    if command_type.endswith("prepare")
+                    else "maintenance_execute"
+                ),
+                required_feature="maintenance",
+            )
+        elif command_type in {"firmware.begin", "firmware.chunk", "firmware.commit"}:
+            action = command_type.rsplit(".", 1)[1]
+            if params.get("action") != action:
+                raise ValidationError("firmware action does not match the registered command")
+            if action == "begin":
+                expected = {
+                    "action", "rollout_id", "image_ref", "version", "hardware_id",
+                    "protocol_version", "partition_layout", "size_bytes", "sha256_hex",
+                    "secure_version", "signature_algorithm", "signature_der_b64",
+                    "confirmation_challenge_id",
+                }
+            elif action == "chunk":
+                expected = {"action", "rollout_id", "offset", "data"}
+            else:
+                expected = {"action", "rollout_id"}
+            if set(params) != expected:
+                raise ValidationError("firmware command fields do not match the registered action")
+            rollout_id = params.get("rollout_id")
+            if not isinstance(rollout_id, str) or not 1 <= len(rollout_id) <= 96:
+                raise ValidationError("firmware rollout id is invalid")
+            if action == "chunk":
+                if (
+                    not isinstance(params.get("offset"), int)
+                    or isinstance(params.get("offset"), bool)
+                    or params["offset"] < 0
+                    or not isinstance(params.get("data"), str)
+                ):
+                    raise ValidationError("firmware chunk offset or data is invalid")
+                try:
+                    decoded = base64.b64decode(params["data"], validate=True)
+                except (ValueError, binascii.Error) as exc:
+                    raise ValidationError("firmware chunk is not valid base64") from exc
+                if not 1 <= len(decoded) <= 3072:
+                    raise ValidationError("firmware chunk exceeds the bounded limit")
+            return MappedCommand(
+                wire_type="command.firmware_update",
+                payload=dict(params),
+                required_capability="firmware_update_v1",
+                required_feature="firmware_rollout",
             )
         else:
             raise ValidationError(f"unsupported web command type: {command_type}")
@@ -1686,6 +2208,7 @@ class Bridge:
             }
             self._change_command(command, CommandState.SENT)
             try:
+                self._record_clock_probe(current, envelope)
                 await transport.send(envelope)
             except (TransportError, ConnectionError, OSError) as exc:
                 await self._fail_transport(current, str(exc))
@@ -1880,9 +2403,15 @@ class Bridge:
             source_value = CommandSource(source)
         except ValueError as exc:
             raise ValidationError(f"unknown command source: {source}") from exc
+        if command_type.startswith("maintenance.") and source_value is not CommandSource.MAINTENANCE:
+            raise ValidationError("maintenance commands are internal task transitions")
+        if command_type.startswith("firmware.") and source_value is not CommandSource.SYSTEM:
+            raise ValidationError("firmware commands are internal rollout transitions")
         max_ttl_ms = (
             CAMERA_PREVIEW_COMMAND_TTL_MS
             if command_type == "camera.preview.start"
+            else 10_000
+            if command_type.startswith("firmware.")
             else MAX_COMMAND_TTL_MS
         )
         if not isinstance(ttl_ms, int) or isinstance(ttl_ms, bool) or not 0 < ttl_ms <= max_ttl_ms:
@@ -2034,6 +2563,7 @@ class Bridge:
             if command_type == "camera.preview.start":
                 self._active_camera_previews[device_id] = session.session_id
             try:
+                self._record_clock_probe(session, envelope)
                 await transport.send(envelope)
             except (TransportError, ConnectionError, OSError) as exc:
                 if command_type == "camera.preview.start" and self._active_camera_previews.get(device_id) == session.session_id:
@@ -2352,6 +2882,134 @@ class Bridge:
             raise ConflictError("camera preview has not been started")
         return session
 
+    def open_control_connection(self, connection_id: str) -> None:
+        if not isinstance(connection_id, str) or not connection_id or len(connection_id) > 96:
+            raise ValidationError("control connection id is invalid")
+        self._control_connections.add(connection_id)
+
+    async def open_camera_viewer(self, device_id: str, viewer_id: str):
+        """Bind one visible camera consumer to its owning control socket."""
+
+        if viewer_id not in self._control_connections:
+            raise ConflictError("camera viewer requires its active control connection")
+        session = self.camera_preview_session(device_id)
+        if "camera_capture_ts_v1" not in session.capabilities:
+            raise CapabilityUnavailable("device_not_declared", "camera_capture_ts_v1")
+        # A request/ACK exchange refreshes the finite clock interval.  The
+        # command is read-only and cannot move the robot.
+        calibration = await self.submit_command(device_id, "control.status", ttl_ms=1_500)
+        calibration = await self._wait_for_terminal_command(calibration.command_id, timeout_s=1.0)
+        if calibration.state is not CommandState.COMPLETED:
+            raise ConflictError("camera clock calibration did not complete")
+        grace = self._camera_stop_grace_tasks.pop(device_id, None)
+        if grace is not None:
+            grace.cancel()
+            await asyncio.gather(grace, return_exceptions=True)
+        return self.camera_viewers.open(
+            viewer_id=viewer_id,
+            device_id=device_id,
+            session_id=session.session_id,
+            now_ms=self._clock_ms(),
+        )
+
+    def camera_frame_for_viewer(self, device_id: str, viewer_id: str) -> CameraFrame:
+        session = self.camera_preview_session(device_id)
+        viewer = self.camera_viewers.get(viewer_id)
+        if viewer is None or viewer.device_id != device_id or viewer.session_id != session.session_id:
+            raise ConflictError("camera viewer is not open for this device session")
+        frame = self.camera_frames.latest(device_id, session_id=session.session_id)
+        if frame is None:
+            raise NotFoundError("camera frame is not available yet")
+        self.camera_viewers.deliver(viewer_id, frame, now_ms=self._clock_ms())
+        return frame
+
+    def acknowledge_camera_display(
+        self,
+        *,
+        device_id: str,
+        viewer_id: str,
+        frame_id: str,
+        token: str,
+        visible: bool,
+    ):
+        session = self.camera_preview_session(device_id)
+        try:
+            viewer = self.camera_viewers.acknowledge_display(
+                viewer_id=viewer_id,
+                device_id=device_id,
+                session_id=session.session_id,
+                frame_id=frame_id,
+                token=token,
+                visible=visible,
+                now_ms=self._clock_ms(),
+            )
+        except CameraFrameError as exc:
+            raise ConflictError(str(exc)) from exc
+        if self._viewer_capture_age_upper_ms(viewer, now_ms=self._clock_ms()) is None:
+            viewer.visible = False
+            raise ConflictError("displayed frame capture age cannot be established")
+        return viewer
+
+    def _viewer_capture_age_upper_ms(self, viewer, *, now_ms: int) -> int | None:
+        if (
+            not viewer.visible
+            or viewer.displayed_at_ms is None
+            or viewer.displayed_capture_timestamp_ms is None
+            or viewer.displayed_capture_clock_id is None
+            or now_ms - viewer.displayed_at_ms > MAX_MANUAL_CAPTURE_AGE_MS
+        ):
+            return None
+        age = self.camera_clock.capture_age_upper_ms(
+            session_id=viewer.session_id,
+            clock_id=viewer.displayed_capture_clock_id,
+            capture_timestamp_ms=viewer.displayed_capture_timestamp_ms,
+            host_now_ms=now_ms,
+        )
+        if age is None or age > MAX_MANUAL_CAPTURE_AGE_MS:
+            return None
+        return age
+
+    def _fresh_manual_viewer(self, device_id: str, session_id: str, connection_id: str):
+        viewer = self.camera_viewers.get(connection_id)
+        if viewer is None or viewer.device_id != device_id or viewer.session_id != session_id:
+            raise ConflictError("manual control requires a viewer bound to this control connection")
+        if self._viewer_capture_age_upper_ms(viewer, now_ms=self._clock_ms()) is None:
+            raise ConflictError("manual control requires a visible frame captured within 500ms")
+        return viewer
+
+    async def close_camera_viewer(self, viewer_id: str) -> None:
+        viewer = self.camera_viewers.close(viewer_id)
+        if viewer is None:
+            return
+        if not self.camera_viewers.active_for_device(viewer.device_id, viewer.session_id):
+            previous = self._camera_stop_grace_tasks.pop(viewer.device_id, None)
+            if previous is not None:
+                previous.cancel()
+            self._camera_stop_grace_tasks[viewer.device_id] = asyncio.create_task(
+                self._stop_camera_after_last_viewer_grace(viewer.device_id, viewer.session_id)
+            )
+
+    async def _stop_camera_after_last_viewer_grace(self, device_id: str, session_id: str) -> None:
+        try:
+            await asyncio.sleep(CAMERA_LAST_VIEWER_GRACE_S)
+            if self.camera_viewers.active_for_device(device_id, session_id):
+                return
+            session = self._active_session(device_id)
+            if session is None or session.session_id != session_id:
+                return
+            if self._active_camera_previews.get(device_id) != session_id:
+                return
+            stop = await self._submit_camera_preview(device_id, "stop")
+            await self._wait_for_terminal_command(stop.command_id, timeout_s=CAMERA_PREVIEW_STOP_WAIT_S)
+        except (CapabilityUnavailable, ConflictError, NotFoundError, ValidationError):
+            # Session loss already deactivates preview state.  A failed stop is
+            # still bounded by the device host-loss watchdog.
+            return
+        finally:
+            current = asyncio.current_task()
+            if self._camera_stop_grace_tasks.get(device_id) is current:
+                self._camera_stop_grace_tasks.pop(device_id, None)
+
     async def _send_host_heartbeat(
         self,
         device_id: str,
@@ -2575,7 +3233,11 @@ class Bridge:
         async with self._control_mode_lock_for(device_id):
             session = self._manual_session(device_id)
             preview_active = self._active_camera_previews.get(device_id) == session.session_id
-            preserve_preview = preview_active and self.feature_gates.get("manual_camera_preview", False)
+            preserve_preview = preview_active and self._manual_video_required()
+            if self._manual_video_required():
+                if not preview_active:
+                    raise ConflictError("manual control requires an active camera preview")
+                self._fresh_manual_viewer(device_id, session.session_id, connection_id)
             if preview_active and not preserve_preview:
                 stop = await self._submit_camera_preview(device_id, "stop")
                 settled = await self._wait_for_terminal_command(
@@ -2595,6 +3257,13 @@ class Bridge:
             )
             return lease, preview_active and not preserve_preview
 
+    def _manual_video_required(self) -> bool:
+        return bool(
+            self.feature_gates.get("manual_control_v1", False)
+            and self.feature_gates.get("manual_camera_preview", False)
+            and not self.feature_gates.get("test_manual_without_video", False)
+        )
+
     def _manual_session(self, device_id: str) -> DeviceSession:
         if not self.feature_gates.get("manual_control_v1", False):
             raise CapabilityUnavailable("feature_gate_disabled", "manual_control_v1")
@@ -2603,7 +3272,15 @@ class Bridge:
             raise ConflictError("manual control requires an online session")
         if "manual_control_v1" not in session.capabilities:
             raise CapabilityUnavailable("device_not_declared", "manual_control_v1")
+        if self._manual_video_required():
+            for required in ("camera_capture_ts_v1", "manual_video_guard_v1"):
+                if required not in session.capabilities:
+                    raise CapabilityUnavailable("device_not_declared", required)
         transport = self._transports.get(session.session_id)
+        if self.feature_gates.get("test_manual_without_video", False) and not getattr(
+            transport, "host_test_only", False
+        ):
+            raise CapabilityUnavailable("unsafe_test_gate_rejected", "manual_control_v1")
         if not (
             getattr(transport, "host_test_only", False)
             or getattr(transport, "manual_control_verified", False)
@@ -2623,6 +3300,8 @@ class Bridge:
         max_duration_ms: int = 30_000,
     ) -> ControlLease:
         session = self._manual_session(device_id)
+        if self._manual_video_required():
+            self._fresh_manual_viewer(device_id, session.session_id, connection_id)
         lease = self.leases.acquire(
             session,
             connection_id,
@@ -2645,6 +3324,8 @@ class Bridge:
         if session.session_id != lease.session_id:
             self.leases.invalidate_session(lease.session_id, reason="session_changed")
             raise ConflictError("control lease session is no longer current")
+        if self._manual_video_required():
+            self._fresh_manual_viewer(lease.device_id, session.session_id, connection_id)
         renewed = self.leases.renew(lease_id, connection_id, ttl_ms=ttl_ms, now=self._now())
         self._audit_lease(renewed)
         return renewed
@@ -2660,6 +3341,7 @@ class Bridge:
     def close_control_connection(self, connection_id: str) -> list[ControlLease]:
         """Invalidate all leases when their owning WebSocket disappears."""
 
+        self._control_connections.discard(connection_id)
         changed: list[ControlLease] = []
         for lease in self.leases.list():
             if lease.connection_id != connection_id or lease.state is not LeaseState.ACTIVE:
@@ -2668,6 +3350,66 @@ class Bridge:
         for lease in changed:
             self._audit_lease(lease)
         return changed
+
+    async def _release_manual_lease_safely(self, lease: ControlLease, *, reason: str) -> None:
+        if lease.state is not LeaseState.ACTIVE or lease.lease_id in self._manual_release_inflight:
+            return
+        self._manual_release_inflight.add(lease.lease_id)
+        try:
+            try:
+                await self.submit_control_input(
+                    lease.lease_id,
+                    lease.connection_id,
+                    input_seq=lease.last_input_seq + 1,
+                    action="release",
+                    ttl_ms=400,
+                )
+                lease.reason = reason
+                self._audit_lease(lease)
+            except (CapabilityUnavailable, ConflictError, NotFoundError, ValidationError):
+                if lease.state is LeaseState.ACTIVE:
+                    self.leases.preempt(lease.lease_id, reason=reason)
+                    self._audit_lease(lease)
+        finally:
+            self._manual_release_inflight.discard(lease.lease_id)
+
+    async def close_control_connection_safely(self, connection_id: str) -> list[ControlLease]:
+        """Best-effort device release, then locally fence the lost browser."""
+
+        owned = [
+            lease
+            for lease in self.leases.list()
+            if lease.connection_id == connection_id and lease.state is LeaseState.ACTIVE
+        ]
+        for lease in owned:
+            await self._release_manual_lease_safely(lease, reason="websocket_closed")
+        changed = self.close_control_connection(connection_id)
+        await self.close_camera_viewer(connection_id)
+        return owned + changed
+
+    async def enforce_manual_video_freshness(self) -> list[ControlLease]:
+        """Revoke active manual control when displayed capture evidence goes stale."""
+
+        now_ms = self._clock_ms()
+        for viewer in self.camera_viewers.list():
+            if now_ms - viewer.last_seen_at_ms > CAMERA_VIEWER_IDLE_MS:
+                await self.close_camera_viewer(viewer.viewer_id)
+        if not self._manual_video_required():
+            return []
+        revoked: list[ControlLease] = []
+        for lease in list(self.leases.list()):
+            if lease.state is not LeaseState.ACTIVE:
+                continue
+            try:
+                self._fresh_manual_viewer(
+                    lease.device_id,
+                    lease.session_id,
+                    lease.connection_id,
+                )
+            except ConflictError:
+                await self._release_manual_lease_safely(lease, reason="video_stale")
+                revoked.append(lease)
+        return revoked
 
     def reap_control_leases(self, *, now: datetime | None = None) -> list[ControlLease]:
         expired = self.leases.expire(now=now or self._now())
@@ -2695,6 +3437,13 @@ class Bridge:
         session = self._manual_session(lease.device_id)
         if session.session_id != lease.session_id:
             raise ConflictError("control lease session is no longer current")
+        displayed_viewer = None
+        if action == "input" and self._manual_video_required():
+            displayed_viewer = self._fresh_manual_viewer(
+                lease.device_id,
+                session.session_id,
+                connection_id,
+            )
         session_epoch = self._session_epoch(session)
         payload = self.leases.accept_input(
             lease_id,
@@ -2707,6 +3456,13 @@ class Bridge:
             ttl_ms=ttl_ms,
             now=self._now(),
         )
+        if displayed_viewer is not None:
+            payload.update(
+                {
+                    "video_frame_id": displayed_viewer.displayed_frame_id,
+                    "video_capture_ts_ms": displayed_viewer.displayed_capture_timestamp_ms,
+                }
+            )
         command_id = f"cmd-{uuid4()}"
         issued_at_ms = self._clock_ms()
         issued_at = self._now()
@@ -2797,6 +3553,7 @@ class Bridge:
             }
             self._change_command(command, CommandState.SENT)
             try:
+                self._record_clock_probe(current, envelope)
                 await transport.send(envelope)
             except (TransportError, ConnectionError, OSError) as exc:
                 await self._fail_transport(current, str(exc))

@@ -18,6 +18,7 @@ target_compile_options(stackchan_face PRIVATE -Wall -Wextra -Wpedantic)
 add_library(lifeos_phase1 STATIC
   src/runtime/runtime.cpp
   src/runtime/servo_io.cpp
+  src/runtime/firmware_update.cpp
   src/behavior/behavior.cpp
   src/hal/fake.cpp
   src/protocol/protocol.cpp
@@ -46,6 +47,11 @@ if(STACKCHAN_BUILD_TESTS)
   add_executable(servo_io_tests tests/runtime/test_servo_io.cpp)
   target_link_libraries(servo_io_tests PRIVATE lifeos_phase1)
   add_test(NAME servo_io_tests COMMAND servo_io_tests)
+
+  add_executable(firmware_update_tests tests/runtime/test_firmware_update.cpp)
+  target_link_libraries(firmware_update_tests PRIVATE lifeos_phase1)
+  target_compile_options(firmware_update_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  add_test(NAME firmware_update_tests COMMAND firmware_update_tests)
 
   add_executable(manual_control_runtime_tests
     src/runtime/manual_control.cpp

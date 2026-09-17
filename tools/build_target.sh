@@ -15,8 +15,12 @@ case "$PROFILE" in
     BUILD_DIR="$PROJECT_DIR/build-hil-16m"
     DEFAULTS="$PROJECT_DIR/sdkconfig.defaults;$PROJECT_DIR/sdkconfig.hil.defaults"
     ;;
+  ota)
+    BUILD_DIR="$PROJECT_DIR/build-ota"
+    DEFAULTS="$PROJECT_DIR/sdkconfig.defaults;$PROJECT_DIR/sdkconfig.ota.defaults"
+    ;;
   *)
-    echo "usage: $0 [production|hil] [idf.py actions...]" >&2
+    echo "usage: $0 [production|hil|ota] [idf.py actions...]" >&2
     exit 2
     ;;
 esac

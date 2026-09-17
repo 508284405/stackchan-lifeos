@@ -13,6 +13,7 @@ from bridge import Bridge, SQLiteStore
 from bridge.api import create_app
 from bridge.domain import CommandState, DeviceSession, DiscoveryCandidate, SessionState
 from bridge.transports.serial import UsbSerialTransport
+from bridge.manual_evidence import load_manual_control_evidence
 
 
 TERMINAL_STATES = {
@@ -28,7 +29,6 @@ TERMINAL_STATES = {
 # factory. It must never quietly turn a live capability into a fake or
 # read-only one based on an omitted command-line flag.
 REAL_CAMERA_PREVIEW_ENABLED = True
-REAL_MANUAL_CONTROL_V1_ENABLED = True
 REAL_MANUAL_PREVIEW_FPS = 2
 RECONNECT_INITIAL_DELAY_S = 0.5
 RECONNECT_MAX_DELAY_S = 8.0
@@ -66,14 +66,24 @@ def build_app(
     device_id: str,
     hardware_id: str,
     startup_grace_s: float,
+    manual_control_evidence: str | None = None,
 ):
+    evidence = (
+        load_manual_control_evidence(
+            manual_control_evidence,
+            device_id=device_id,
+            hardware_id=hardware_id,
+        )
+        if manual_control_evidence is not None
+        else None
+    )
     bridge = Bridge(
         SQLiteStore(),
         feature_gates={
             "usb_add": True,
             "media": REAL_CAMERA_PREVIEW_ENABLED,
-            "manual_control_v1": REAL_MANUAL_CONTROL_V1_ENABLED,
-            "manual_camera_preview": True,
+            "manual_control_v1": evidence is not None,
+            "manual_camera_preview": evidence is not None,
         },
         camera_preview_fps=REAL_MANUAL_PREVIEW_FPS,
     )
@@ -82,9 +92,10 @@ def build_app(
         "protocol",
         "safety",
         "camera",
-        "manual_control_v1",
-        "manual_preflight_v1",
+        "camera_capture_ts_v1",
     }
+    if evidence is not None:
+        capabilities.update({"manual_control_v1", "manual_video_guard_v1", "manual_preflight_v1"})
     candidate = DiscoveryCandidate(
         candidate_id=f"candidate-{hardware_id}",
         hardware_id=hardware_id,
@@ -101,7 +112,7 @@ def build_app(
             port,
             transport_id=f"usb:{port}:web-manual",
             startup_grace_s=startup_grace_s,
-            manual_control_verified=True,
+            manual_control_verified=evidence is not None,
         )
 
     async def connect_real_device() -> DeviceSession:
@@ -119,7 +130,12 @@ def build_app(
         ):
             await bridge.disconnect(session.session_id)
             raise RuntimeError("real device did not reach completed safe-idle status")
-        if "manual_control_v1" not in session.capabilities:
+        if evidence is not None and (
+            "manual_control_v1" not in session.capabilities
+            or "manual_video_guard_v1" not in session.capabilities
+            or "camera_capture_ts_v1" not in session.capabilities
+            or bridge.registry.get(device_id).firmware_version != evidence.firmware_version
+        ):
             await bridge.disconnect(session.session_id)
             raise RuntimeError("real device did not declare manual_control_v1")
         app.state.real_session_id = session.session_id
@@ -173,12 +189,17 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--device-id", default="stackchan-01")
     parser.add_argument("--hardware-id", default="1c:db:d4:ba:43:40")
     parser.add_argument("--startup-grace", type=float, default=3.0)
+    parser.add_argument(
+        "--manual-control-evidence",
+        help="path to a supervised lifeos.manual-hil.v1 PASS record for this exact device/firmware",
+    )
     args = parser.parse_args(argv)
     app = build_app(
         port=args.usb_port,
         device_id=args.device_id,
         hardware_id=args.hardware_id,
         startup_grace_s=args.startup_grace,
+        manual_control_evidence=args.manual_control_evidence,
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
     return 0

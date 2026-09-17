@@ -1,0 +1,5 @@
+#pragma once
+
+// Public verification material only. The private signing key never enters the
+// firmware build. Empty material disables the firmware-update capability.
+inline constexpr char kLifeosOtaTrustedPublicKey[] = "@LIFEOS_OTA_TRUSTED_PUBLIC_KEY_ESCAPED@";

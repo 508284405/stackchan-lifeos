@@ -88,7 +88,7 @@ _SESSION_TRANSITIONS: dict[SessionState, frozenset[SessionState]] = {
 }
 
 _BATCH_TRANSITIONS: dict[BatchState, frozenset[BatchState]] = {
-    BatchState.PENDING: frozenset({BatchState.RUNNING, BatchState.CANCELLED, BatchState.EXPIRED}),
+    BatchState.PENDING: frozenset({BatchState.RUNNING, BatchState.PAUSED, BatchState.CANCELLED, BatchState.EXPIRED}),
     BatchState.RUNNING: frozenset(
         {
             BatchState.COMPLETED,
@@ -96,7 +96,12 @@ _BATCH_TRANSITIONS: dict[BatchState, frozenset[BatchState]] = {
             BatchState.FAILED,
             BatchState.CANCELLED,
             BatchState.EXPIRED,
+            BatchState.PAUSED,
         }
+    ),
+    BatchState.PAUSED: frozenset(
+        {BatchState.RUNNING, BatchState.CANCELLED, BatchState.EXPIRED, BatchState.PARTIAL,
+         BatchState.FAILED, BatchState.COMPLETED}
     ),
 }
 
@@ -115,7 +120,8 @@ _ROLLOUT_TRANSITIONS = {
     RolloutTaskState.PENDING: frozenset({RolloutTaskState.PREFLIGHT, RolloutTaskState.CANCELLED, RolloutTaskState.EXPIRED}),
     RolloutTaskState.PREFLIGHT: frozenset({RolloutTaskState.READY, RolloutTaskState.REJECTED, RolloutTaskState.EXPIRED}),
     RolloutTaskState.READY: frozenset({RolloutTaskState.RUNNING, RolloutTaskState.REJECTED, RolloutTaskState.EXPIRED}),
-    RolloutTaskState.RUNNING: frozenset({RolloutTaskState.COMPLETED, RolloutTaskState.FAILED, RolloutTaskState.REJECTED, RolloutTaskState.EXPIRED}),
+    RolloutTaskState.RUNNING: frozenset({RolloutTaskState.AWAITING_CONFIRMATION, RolloutTaskState.FAILED, RolloutTaskState.REJECTED, RolloutTaskState.EXPIRED}),
+    RolloutTaskState.AWAITING_CONFIRMATION: frozenset({RolloutTaskState.COMPLETED, RolloutTaskState.RECOVERED, RolloutTaskState.FAILED, RolloutTaskState.EXPIRED}),
 }
 
 

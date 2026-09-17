@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -80,7 +80,11 @@ class RolloutRequest(BaseModel):
 
 class RolloutPreflightRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    checks: dict[str, bool] = Field(default_factory=dict)
+
+
+class RolloutBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    artifact_refs: dict[str, str] = Field(min_length=1, max_length=200)
 
 
 class UsbAddRequest(BaseModel):
@@ -300,14 +304,14 @@ def create_app(
     @app.post("/api/v1/devices/{device_id}/maintenance/prepare", status_code=202)
     async def maintenance_prepare(device_id: str, request: MaintenancePrepareRequest):
         try:
-            return bridge.prepare_maintenance(device_id, request.operation, ttl_ms=request.ttl_ms).to_dict()
+            return (await bridge.prepare_maintenance(device_id, request.operation, ttl_ms=request.ttl_ms)).to_dict()
         except NotFoundError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
         except CapabilityUnavailable as exc: raise HTTPException(status_code=409, detail={"error": {"code": exc.code, "reason": exc.reason, "required_capability": exc.required_capability}}) from exc
         except (ConflictError, ValidationError) as exc: raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/api/v1/maintenance-tasks/{task_id}/execute", status_code=202)
     async def maintenance_execute(task_id: str):
-        try: return bridge.execute_maintenance(task_id).to_dict()
+        try: return (await bridge.execute_maintenance(task_id)).to_dict()
         except CapabilityUnavailable as exc: raise HTTPException(status_code=409, detail={"error": {"code": exc.code, "reason": exc.reason, "required_capability": exc.required_capability}}) from exc
         except ConflictError as exc: raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -330,14 +334,14 @@ def create_app(
     @app.post("/api/v1/rollout-tasks/{task_id}/preflight", status_code=202)
     async def rollout_preflight(task_id: str, request: RolloutPreflightRequest):
         try:
-            if len(request.checks) > 4 or set(request.checks) - {"signature_verified", "hardware_compatible", "partition_compatible", "protocol_compatible"}:
-                raise ValidationError("checks contains an unknown or excessive field")
-            return bridge.preflight_rollout(task_id, request.checks).to_dict()
-        except (KeyError, ValidationError) as exc: raise HTTPException(status_code=422, detail=str(exc)) from exc
+            return (await bridge.preflight_rollout(task_id)).to_dict()
+        except KeyError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CapabilityUnavailable as exc: raise HTTPException(status_code=409, detail=exc.reason) from exc
+        except (ConflictError, ValidationError) as exc: raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/api/v1/rollout-tasks/{task_id}/execute", status_code=202)
     async def rollout_execute(task_id: str):
-        try: return bridge.execute_rollout(task_id).to_dict()
+        try: return (await bridge.execute_rollout(task_id)).to_dict()
         except CapabilityUnavailable as exc: raise HTTPException(status_code=409, detail={"error": {"code": exc.code, "reason": exc.reason, "required_capability": exc.required_capability}}) from exc
         except KeyError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -345,6 +349,31 @@ def create_app(
     async def rollout_task(task_id: str):
         try: return bridge.get_rollout(task_id).to_dict()
         except KeyError as exc: raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/v1/rollout-batches", status_code=202)
+    async def rollout_batch_create(request: RolloutBatchRequest):
+        try:
+            return bridge.create_rollout_batch(request.artifact_refs).to_dict()
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/v1/rollout-batches/{task_id}/resume", status_code=202)
+    async def rollout_batch_resume(task_id: str):
+        try:
+            return (await bridge.resume_rollout_batch(task_id)).to_dict()
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/v1/rollout-batches/{task_id}")
+    async def rollout_batch_get(task_id: str):
+        try:
+            return bridge.get_rollout_batch(task_id).to_dict()
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
     @app.post("/api/v1/devices/{device_id}/emergency-stop", status_code=202)
     async def emergency_stop(device_id: str, request: EmergencyStopRequest):
         try:
@@ -392,11 +421,12 @@ def create_app(
         return _command_payload(command)
 
     @app.get("/api/v1/devices/{device_id}/camera/stream")
-    async def camera_stream(device_id: str, request: Request):
+    async def camera_stream(device_id: str, request: Request, viewer_id: str):
         """Stream the latest complete JPEG frames as a bounded MJPEG response."""
 
         _require_feature("media")
-        if configured_origins is not None and request.headers.get("origin") not in configured_origins:
+        origin = request.headers.get("origin")
+        if configured_origins is not None and origin is not None and origin not in configured_origins:
             raise HTTPException(status_code=403, detail="request origin is not allowlisted")
         try:
             session = bridge.camera_preview_session(device_id)
@@ -436,11 +466,16 @@ def create_app(
                     continue
                 empty_polls = 0
                 frame_id = frame.frame_id
+                try:
+                    bridge.camera_viewers.deliver(viewer_id, frame, now_ms=bridge._clock_ms())
+                except Exception:
+                    return
                 yield (
                     b"--lifeos-frame\r\n"
                     b"Content-Type: image/jpeg\r\n"
                     + f"Content-Length: {frame.size}\r\n".encode("ascii")
-                    + f"X-LifeOS-Frame-Id: {frame.frame_id}\r\n\r\n".encode("ascii")
+                    + f"X-LifeOS-Frame-Id: {frame.frame_id}\r\n".encode("ascii")
+                    + f"X-LifeOS-Frame-Token: {frame.token}\r\n\r\n".encode("ascii")
                     + frame.data
                     + b"\r\n"
                 )
@@ -452,6 +487,33 @@ def create_app(
                 "Cache-Control": "no-store, no-cache, must-revalidate",
                 "Pragma": "no-cache",
                 "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.get("/api/v1/devices/{device_id}/camera/frame")
+    async def camera_frame(device_id: str, request: Request, viewer_id: str):
+        """Return one latest frame so the UI can acknowledge actual display."""
+
+        _require_feature("media")
+        origin = request.headers.get("origin")
+        if configured_origins is not None and origin is not None and origin not in configured_origins:
+            raise HTTPException(status_code=403, detail="request origin is not allowlisted")
+        try:
+            frame = bridge.camera_frame_for_viewer(device_id, viewer_id)
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CapabilityUnavailable as exc:
+            raise HTTPException(status_code=409, detail=exc.reason) from exc
+        except ConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return Response(
+            content=frame.data,
+            media_type="image/jpeg",
+            headers={
+                "Cache-Control": "no-store, no-cache, must-revalidate",
+                "X-LifeOS-Frame-Id": frame.frame_id,
+                "X-LifeOS-Frame-Token": frame.token,
+                "X-LifeOS-Capture-Ts-Ms": str(frame.capture_timestamp_ms),
             },
         )
 
@@ -570,6 +632,7 @@ def create_app(
             return
         await websocket.accept()
         connection_id = f"control-{uuid4()}"
+        bridge.open_control_connection(connection_id)
         await websocket.send_json({"type": "control.connected", "connection_id": connection_id})
         try:
             while True:
@@ -577,6 +640,7 @@ def create_app(
                     message = await asyncio.wait_for(websocket.receive_json(), timeout=0.1)
                 except asyncio.TimeoutError:
                     bridge.reap_control_leases()
+                    await bridge.enforce_manual_video_freshness()
                     continue
                 if not isinstance(message, dict):
                     await websocket.send_json({"type": "control.error", "code": "invalid_request"})
@@ -595,6 +659,37 @@ def create_app(
                                 "type": "lease.acquired",
                                 "lease": _lease_payload(lease),
                                 "camera_preview_stopped": camera_preview_stopped,
+                            }
+                        )
+                    elif operation == "viewer.open":
+                        viewer = await bridge.open_camera_viewer(
+                            message["device_id"],
+                            connection_id,
+                        )
+                        await websocket.send_json(
+                            {
+                                "type": "viewer.opened",
+                                "viewer_id": viewer.viewer_id,
+                                "device_id": viewer.device_id,
+                                "session_id": viewer.session_id,
+                            }
+                        )
+                    elif operation == "viewer.close":
+                        await bridge.close_camera_viewer(connection_id)
+                        await websocket.send_json({"type": "viewer.closed", "viewer_id": connection_id})
+                    elif operation == "video.displayed":
+                        viewer = bridge.acknowledge_camera_display(
+                            device_id=message["device_id"],
+                            viewer_id=connection_id,
+                            frame_id=message["frame_id"],
+                            token=message["token"],
+                            visible=message.get("visible") is True,
+                        )
+                        await websocket.send_json(
+                            {
+                                "type": "video.display.acknowledged",
+                                "viewer_id": viewer.viewer_id,
+                                "frame_id": viewer.displayed_frame_id,
                             }
                         )
                     elif operation == "lease.renew":
@@ -638,9 +733,9 @@ def create_app(
                 except (ConflictError, NotFoundError, ValidationError) as exc:
                     await websocket.send_json({"type": "control.error", "code": "rejected", "reason": str(exc)})
         except WebSocketDisconnect:
-            bridge.close_control_connection(connection_id)
+            await bridge.close_control_connection_safely(connection_id)
         except (ValueError, TypeError):
-            bridge.close_control_connection(connection_id)
+            await bridge.close_control_connection_safely(connection_id)
             await websocket.close(code=1003)
 
     web_root = Path(__file__).resolve().parents[1] / "web"

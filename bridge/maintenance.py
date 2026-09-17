@@ -17,6 +17,7 @@ from .domain import (
 from .errors import CapabilityUnavailable, ConflictError, ProtocolError, ValidationError
 
 MAX_OPERATION_LENGTH = 64
+ALLOWED_OPERATIONS = frozenset({"factory_reset", "firmware_update"})
 CONFIRMATION_CAPABILITY = "maintenance_confirmation"
 EXECUTE_CAPABILITY = "maintenance_execute"
 
@@ -62,15 +63,27 @@ class MaintenanceManager:
         )
 
     def prepare(self, device_id: str, session_id: str, operation: str, *, ttl_ms: int = 60_000,
-                capabilities: set[str] | frozenset[str] = frozenset()) -> MaintenanceTask:
+                capabilities: set[str] | frozenset[str] = frozenset(),
+                context: dict[str, Any] | None = None) -> MaintenanceTask:
         if not isinstance(operation, str) or not operation or len(operation) > MAX_OPERATION_LENGTH:
             raise ValidationError("operation must be a bounded non-empty string")
+        if operation not in ALLOWED_OPERATIONS:
+            raise ValidationError("maintenance operation is not allowlisted")
         if not isinstance(ttl_ms, int) or isinstance(ttl_ms, bool) or not 1 <= ttl_ms <= 300_000:
             raise ValidationError("ttl_ms must be between 1 and 300000")
         if not self.feature_enabled():
             raise CapabilityUnavailable("feature_gate_disabled", "maintenance")
         if CONFIRMATION_CAPABILITY not in capabilities:
             raise CapabilityUnavailable("device_not_declared", CONFIRMATION_CAPABILITY)
+        context = dict(context or {})
+        if operation == "firmware_update":
+            if set(context) != {"rollout_id", "sha256_hex"} or not all(
+                isinstance(context.get(key), str) and context[key]
+                for key in ("rollout_id", "sha256_hex")
+            ):
+                raise ValidationError("firmware update confirmation requires rollout and image binding")
+        elif context:
+            raise ValidationError("factory reset confirmation accepts no context")
         challenge_id = f"mch-{uuid4()}"
         created_at = self.now()
         task = MaintenanceTask(
@@ -79,6 +92,7 @@ class MaintenanceManager:
             operation,
             session_id,
             challenge_id,
+            context=context,
             created_at=created_at,
             updated_at=created_at,
         )
@@ -87,6 +101,7 @@ class MaintenanceManager:
             "device_id": device_id,
             "session_id": session_id,
             "operation": operation,
+            "context": context,
             "expires_at": created_at + timedelta(milliseconds=ttl_ms),
             "used": False,
         }
@@ -139,6 +154,7 @@ class MaintenanceManager:
             raise ConflictError("maintenance task is not awaiting confirmation")
         transition_maintenance(task.state, MaintenanceTaskState.CONFIRMED)
         task.state = MaintenanceTaskState.CONFIRMED
+        task.confirmation_expires_at = now + timedelta(milliseconds=valid_for_ms)
         self._save(task)
         self._audit(
             AuditKind.MAINTENANCE_CHALLENGE_CHANGED,
@@ -174,19 +190,50 @@ class MaintenanceManager:
             }
         ]
 
-    def execute(self, task_id: str, *, capabilities: set[str] | frozenset[str]) -> MaintenanceTask:
+    def begin_execute(self, task_id: str, *, capabilities: set[str] | frozenset[str]) -> MaintenanceTask:
         task = self.tasks.get(task_id)
         if task is None:
             raise ConflictError("maintenance task not found")
         if task.state is not MaintenanceTaskState.CONFIRMED:
             raise ConflictError("maintenance task is not confirmed")
+        if task.confirmation_expires_at is None or self.now() >= task.confirmation_expires_at:
+            self.expire(task_id, reason="confirmation_expired")
+            raise ConflictError("maintenance confirmation has expired")
+        if task.operation != "factory_reset":
+            raise ConflictError("this maintenance confirmation is consumed by its bound operation")
         if not self.feature_enabled():
             transition_maintenance(task.state, MaintenanceTaskState.REJECTED); task.state, task.error = MaintenanceTaskState.REJECTED, {"code": "capability_unavailable", "reason": "feature_gate_disabled"}
         elif EXECUTE_CAPABILITY not in capabilities:
             transition_maintenance(task.state, MaintenanceTaskState.REJECTED); task.state, task.error = MaintenanceTaskState.REJECTED, {"code": "capability_unavailable", "reason": "device_not_declared", "required_capability": EXECUTE_CAPABILITY}
         else:
-            # The capability is intentionally not wired in this release.
-            transition_maintenance(task.state, MaintenanceTaskState.REJECTED); task.state, task.error = MaintenanceTaskState.REJECTED, {"code": "capability_unavailable", "reason": "protocol_not_implemented", "required_capability": EXECUTE_CAPABILITY}
+            transition_maintenance(task.state, MaintenanceTaskState.EXECUTING)
+            task.state = MaintenanceTaskState.EXECUTING
+        self._save(task)
+        return task
+
+    def consume_confirmation(self, task_id: str) -> MaintenanceTask:
+        task = self.get(task_id)
+        if task.state is not MaintenanceTaskState.CONFIRMED:
+            raise ConflictError("maintenance confirmation is not available")
+        if task.confirmation_expires_at is None or self.now() >= task.confirmation_expires_at:
+            self.expire(task_id, reason="confirmation_expired")
+            raise ConflictError("maintenance confirmation has expired")
+        transition_maintenance(task.state, MaintenanceTaskState.EXECUTING)
+        task.state = MaintenanceTaskState.EXECUTING
+        self._save(task)
+        transition_maintenance(task.state, MaintenanceTaskState.COMPLETED)
+        task.state = MaintenanceTaskState.COMPLETED
+        self._save(task)
+        return task
+
+    def finish_execute(self, task_id: str, *, completed: bool, reason: str | None = None) -> MaintenanceTask:
+        task = self.get(task_id)
+        if task.state is not MaintenanceTaskState.EXECUTING:
+            raise ConflictError("maintenance task is not executing")
+        target = MaintenanceTaskState.COMPLETED if completed else MaintenanceTaskState.REJECTED
+        transition_maintenance(task.state, target)
+        task.state = target
+        task.error = None if completed else {"code": "rejected", "reason": reason or "device_rejected"}
         self._save(task)
         return task
 

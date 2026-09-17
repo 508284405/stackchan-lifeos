@@ -65,14 +65,16 @@
     "frame_begin": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["frame_id", "format", "width", "height", "size", "chunk_count"],
+      "required": ["frame_id", "format", "width", "height", "size", "chunk_count", "capture_ts_ms", "clock_id"],
       "properties": {
         "frame_id": {"type": "string", "minLength": 1, "maxLength": 96},
         "format": {"const": "jpeg"},
         "width": {"const": 320},
         "height": {"const": 240},
         "size": {"type": "integer", "minimum": 2, "maximum": 65536},
-        "chunk_count": {"type": "integer", "minimum": 1, "maximum": 32}
+        "chunk_count": {"type": "integer", "minimum": 1, "maximum": 32},
+        "capture_ts_ms": {"type": "integer", "minimum": 0},
+        "clock_id": {"type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[A-Za-z0-9_.:-]+$"}
       }
     },
     "frame_chunk": {

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://stackchan.local/schemas/lifeos.v1/firmware-update-v1.json",
+  "title": "LifeOS recoverable firmware update payload",
+  "type": "object",
+  "oneOf": [
+    {"$ref": "#/$defs/begin"},
+    {"$ref": "#/$defs/chunk"},
+    {"$ref": "#/$defs/commit"}
+  ],
+  "$defs": {
+    "token": {"type": "string", "minLength": 1, "maxLength": 96, "pattern": "^[A-Za-z0-9_.:-]+$"},
+    "begin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "rollout_id", "image_ref", "version", "hardware_id", "protocol_version", "partition_layout", "size_bytes", "sha256_hex", "secure_version", "signature_algorithm", "signature_der_b64", "confirmation_challenge_id"],
+      "properties": {
+        "action": {"const": "begin"},
+        "rollout_id": {"$ref": "#/$defs/token"},
+        "confirmation_challenge_id": {"$ref": "#/$defs/token"},
+        "image_ref": {"$ref": "#/$defs/token"},
+        "version": {"type": "string", "minLength": 1, "maxLength": 31, "pattern": "^[A-Za-z0-9_.:-]+$"},
+        "hardware_id": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9_.:-]+$"},
+        "protocol_version": {"const": "lifeos.v1"},
+        "partition_layout": {"const": "ota_ab_v1"},
+        "size_bytes": {"type": "integer", "minimum": 1, "maximum": 4194304},
+        "sha256_hex": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "secure_version": {"type": "integer", "minimum": 0, "maximum": 4294967295},
+        "signature_algorithm": {"const": "ecdsa-p256-sha256"},
+        "signature_der_b64": {"type": "string", "minLength": 1, "maxLength": 108, "contentEncoding": "base64"}
+      }
+    },
+    "chunk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "rollout_id", "offset", "data"],
+      "properties": {
+        "action": {"const": "chunk"},
+        "rollout_id": {"$ref": "#/$defs/token"},
+        "offset": {"type": "integer", "minimum": 0, "maximum": 4194303},
+        "data": {"type": "string", "minLength": 1, "maxLength": 4096, "contentEncoding": "base64"}
+      }
+    },
+    "commit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["action", "rollout_id"],
+      "properties": {
+        "action": {"const": "commit"},
+        "rollout_id": {"$ref": "#/$defs/token"}
+      }
+    }
+  }
+}

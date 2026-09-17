@@ -3,6 +3,7 @@ idf_component_register(
     "../../../src/runtime/runtime.cpp"
     "../../../src/runtime/servo_io.cpp"
     "../../../src/runtime/manual_control.cpp"
+    "../../../src/runtime/firmware_update.cpp"
     "../../../src/behavior/behavior.cpp"
     "../../../src/protocol/protocol.cpp"
     "../../../src/phase1/controller.cpp"

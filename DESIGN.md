@@ -11,6 +11,8 @@
 - Detailed system contract: `docs/rfc/0001-web-bridge-fleet-control.md`
 - Delivery plan: `docs/web-bridge-implementation-plan.md`
 - Current implementation/acceptance status: `docs/phase4-acceptance.md`
+- Confirmed video-control, update recovery and reset requirements:
+  `docs/rfc/0008-web-control-safety-and-recovery.md` (2026-09-16)
 
 This document is the UI and product-experience source of truth for the LifeOS
 Web Console. It does not replace the device wire protocol or firmware safety
@@ -207,6 +209,19 @@ device-side safety loop, the screen design must change.
   fault, conflicting command, or maintenance mode.
 - Offline/slow network: show last-seen age and invalidate continuous control.
   Discrete motion and speech commands are not queued for later replay.
+- Manual direction control requires a displayed frame from the same device and
+  session whose capture age is at most 500 ms. Unknown/stale video revokes the
+  lease; fresh video never automatically resumes motion. Camera receipt and an
+  open image connection alone do not prove that the operator sees a fresh frame.
+- When the last viewer leaves, stop capture after a bounded grace period. A
+  stopped preview requires an explicit start; losing control focus releases
+  movement immediately without waiting for the camera grace period.
+- Firmware rollout distinguishes local boot acceptance from host confirmation.
+  A locally healthy new image remains installed while the Bridge is offline;
+  the UI shows awaiting confirmation and the device remains stopped. A failed
+  or unconfirmed target pauses unstarted rollout targets until explicit resume.
+- Factory-reset consequences state that device user settings and pairing are
+  cleared, while host conversations, memories and audit remain available.
 
 ## Content voice
 
@@ -223,11 +238,9 @@ device-side safety loop, the screen design must change.
 
 ## Implementation constraints
 
-- Framework/styling system: W2 selects no frontend framework and no new runtime
-  dependency. FastAPI serves the static `web/` HTML/CSS/ES-module assets; this
-  is a deliberately reversible packaging decision that keeps the current Python
-  checkout deployable. Revisit only when the console needs a framework-specific
-  capability, after a new packaging review.
+- Framework/styling system: React/Vite source lives in `web/src`; the committed
+  build in `web/dist` is served by FastAPI. Runtime dependencies remain limited
+  to React and React DOM, with no CDN assets.
 - Design-token constraints: begin with a small semantic token set; do not build a
   general-purpose design system before the four primary screens exist.
 - Performance constraints:
@@ -253,10 +266,9 @@ device-side safety loop, the screen design must change.
 
 ## Open questions
 
-- [x] Select the W2 packaging model: dependency-free static assets served by
-  FastAPI; owner: W2 implementation; impact: no frontend build step or runtime
-  dependency in the first monitoring release. A future framework remains a
-  separate decision.
+- [x] Select the packaging model: React/Vite with committed static build output
+  served by FastAPI; owner: Web implementation. Rebuild `web/dist` with source
+  changes so deployed assets match the reviewed UI.
 - [x] Select the current single-device media transport: continuous QVGA MJPEG over
   the bounded USB JSONL frame path, surfaced as HTTP MJPEG; owner: RFC 0006;
   impact: real 10 fps target, privacy, and UI playback. H.264/WebRTC/HLS, audio,

@@ -283,6 +283,14 @@ class SQLiteStore:
     def recover_inflight_batches(self) -> list[BatchTask]:
         records = self.list_batches(states={BatchState.PENDING, BatchState.RUNNING})
         for record in records:
+            if record.command_type == "firmware.rollout":
+                transition_batch(record.aggregate_state, BatchState.PAUSED)
+                record.aggregate_state = BatchState.PAUSED
+                for target in record.targets:
+                    if target.state is BatchTargetState.RUNNING:
+                        target.state = BatchTargetState.AWAITING_CONFIRMATION
+                self.save_batch(record)
+                continue
             transition_batch(record.aggregate_state, BatchState.EXPIRED)
             record.aggregate_state = BatchState.EXPIRED
             for target in record.targets:

@@ -51,12 +51,15 @@ struct Envelope {
 
 struct ManualControlPayload {
   BoundedText<kMaxIdBytes> lease_id;
+  BoundedText<kMaxIdBytes> video_frame_id;
   std::uint64_t input_seq{0};
   ManualAction action{ManualAction::Input};
   float yaw{0.0F};
   float pitch{0.0F};
   std::uint64_t ttl_ms{0};
+  std::uint64_t video_capture_ts_ms{0};
   bool has_direction{false};
+  bool has_video_proof{false};
 };
 
 struct CameraPreviewPayload {

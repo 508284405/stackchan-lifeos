@@ -23,7 +23,8 @@ void set_text(BoundedText<N>& output, const char* value) {
 }
 
 ManualControlPayload input(const char* lease, std::uint64_t sequence,
-                           float yaw, float pitch, std::uint64_t ttl = 400) {
+                           float yaw, float pitch, std::uint64_t ttl = 400,
+                           std::uint64_t capture_ts_ms = 1000) {
   ManualControlPayload value;
   set_text(value.lease_id, lease);
   value.input_seq = sequence;
@@ -31,7 +32,10 @@ ManualControlPayload input(const char* lease, std::uint64_t sequence,
   value.yaw = yaw;
   value.pitch = pitch;
   value.ttl_ms = ttl;
+  set_text(value.video_frame_id, "frame-1");
+  value.video_capture_ts_ms = capture_ts_ms;
   value.has_direction = true;
+  value.has_video_proof = true;
   return value;
 }
 
@@ -80,7 +84,7 @@ int main() {
                                 false, false, false, false, 1601);
   assert(late.code == ManualControlResultCode::SequenceRejected);
 
-  const auto start_again = state.apply(input("lease-2", 1, 0.0F, 0.0F), home,
+  const auto start_again = state.apply(input("lease-2", 1, 0.0F, 0.0F, 400, 1700), home,
                                         true, false, false, false, false, 1700);
   assert(start_again.accepted);
   ManualControlPayload release;
@@ -91,6 +95,18 @@ int main() {
   const auto released = state.apply(release, home, true, false, false, false,
                                     false, 1800);
   assert(released.accepted && released.release && !state.active());
+
+  ManualControlState stale_video_state;
+  const auto stale_video = stale_video_state.apply(
+      input("lease-video", 1, 1.0F, 0.0F, 500, 1000), home, true,
+      false, false, false, false, 1501);
+  assert(stale_video.code == ManualControlResultCode::Expired);
+
+  ManualControlState video_deadline_state;
+  const auto video_bounded = video_deadline_state.apply(
+      input("lease-video", 1, 1.0F, 0.0F, 500, 1200), home, true,
+      false, false, false, false, 1400);
+  assert(video_bounded.accepted && video_bounded.expires_at_ms == 1700);
 
   std::cout << "manual control runtime tests passed\n";
 }

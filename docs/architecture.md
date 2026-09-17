@@ -159,7 +159,9 @@ CGraph node → LifeOS domain interface → ESP-IDF/M5Stack HAL → hardware
 - sub2api/上游不可用、限流或鉴权失败：LangGraph 进入 `DEGRADED_LOCAL`；设备仍运行
   眨眼、待机、触摸反馈和安全动作，不自动回退本机 Codex。
 - LangGraph 不可用：Gateway 丢弃非紧急 agent command，设备进入本地 idle。
-- 链路断开：设备停止接受旧命令，超时后回到安全姿态并释放扭矩。
+- 链路断开：设备停止接受旧命令，取消运动目标并按安全策略释放扭矩，不自动回正；重新
+  hello 不恢复旧命令或租约，恢复运动须由用户主动发起。完整规则见
+  [RFC 0008](rfc/0008-web-control-safety-and-recovery.md)。
 - CGraph/FreeRTOS 任务异常：看门狗复位；启动时保持舵机停止，需完成自检后才允许动作。
 - 相机或音频异常：标记能力不可用，不把空值解释成“没有人”；视觉功能降级不影响急停。
 

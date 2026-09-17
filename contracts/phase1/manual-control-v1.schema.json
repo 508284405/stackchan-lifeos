@@ -18,16 +18,26 @@
         "pitch": {"type": "number", "minimum": -1, "maximum": 1}
       }
     },
+    "video_frame_id": {"type": "string", "minLength": 1, "maxLength": 96},
+    "video_capture_ts_ms": {"type": "integer", "minimum": 0},
     "ttl_ms": {"type": "integer", "minimum": 300, "maximum": 500}
   },
   "allOf": [
     {
       "if": {"properties": {"action": {"const": "input"}}},
-      "then": {"required": ["direction"]}
+      "then": {"required": ["direction", "video_frame_id", "video_capture_ts_ms"]}
     },
     {
       "if": {"properties": {"action": {"const": "release"}}},
-      "then": {"not": {"required": ["direction"]}}
+      "then": {
+        "not": {
+          "anyOf": [
+            {"required": ["direction"]},
+            {"required": ["video_frame_id"]},
+            {"required": ["video_capture_ts_ms"]}
+          ]
+        }
+      }
     }
   ]
 }
