@@ -200,8 +200,19 @@ def create_app(
             "origin_allowlist_configured": configured_origins is not None and bool(configured_origins),
             "feature_gates": {
                 "control": bool(bridge.feature_gates.get("control", False)),
+                "status": bool(bridge.feature_gates.get("status", False)),
+                "motion": bool(bridge.feature_gates.get("motion", False)),
+                "safety": bool(bridge.feature_gates.get("safety", False)),
+                "emergency_stop": bool(bridge.feature_gates.get("emergency_stop", False)),
                 "manual_control_v1": bool(bridge.feature_gates.get("manual_control_v1", False)),
+                "manual_camera_preview": bool(bridge.feature_gates.get("manual_camera_preview", False)),
                 "media": bool(bridge.feature_gates.get("media", False)),
+                "behavior": bool(bridge.feature_gates.get("behavior", False)),
+                "speech": bool(bridge.feature_gates.get("speech", False)),
+                "maintenance": bool(bridge.feature_gates.get("maintenance", False)),
+                "firmware_rollout": bool(bridge.feature_gates.get("firmware_rollout", False)),
+                "usb_add": bool(bridge.feature_gates.get("usb_add", False)),
+                "diagnostics": True,
             },
         }
 

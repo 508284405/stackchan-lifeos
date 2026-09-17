@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 
 const source = readFileSync(new URL("./src/DeviceControls.jsx", import.meta.url), "utf8");
+const appSource = readFileSync(new URL("./src/App.jsx", import.meta.url), "utf8");
 const distAsset = readdirSync(new URL("./dist/assets/", import.meta.url)).find((name) => /^index-.*\.js$/.test(name));
 assert.ok(distAsset, "built JavaScript asset exists");
 const dist = readFileSync(new URL(`./dist/assets/${distAsset}`, import.meta.url), "utf8");
@@ -22,5 +23,14 @@ assert.match(source, /const manualReady = online && controlEnabled && manualEnab
 assert.match(source, /event\.key === "Enter" \|\| event\.key === " "/);
 assert.match(source, /onPointerDown=/);
 assert.match(source, /onPointerUp={release}/);
+assert.match(source, /channel={channel}/, "manual and camera controls receive the shared control channel");
+assert.match(source, /enabled={manualReady && videoReady}/, "manual input stays locked until displayed video is fresh");
 
-console.log("manual control bar regression checks passed");
+for (const section of ["tasks", "audit", "system"]) {
+  assert.match(appSource, new RegExp(`id="${section}"`), `${section} section is rendered`);
+}
+assert.match(appSource, /fetch\("\/api\/v1\/batch-tasks"/, "batch creation uses the typed API");
+assert.match(appSource, /\/api\/v1\/batch-tasks\/\$\{encodeURIComponent\(taskId\)\}/, "batch results are polled per task");
+assert.doesNotMatch(appSource, /commandType: "manual_control"/, "batch UI never emits continuous manual control");
+
+console.log("web control and operations regression checks passed");

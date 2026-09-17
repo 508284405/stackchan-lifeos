@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+from uuid import uuid4
 
 from fastapi import FastAPI, WebSocket
 
@@ -12,6 +14,9 @@ from .config import provider_config_from_env
 from .flow import run_cognitive_cycle
 from .models import LifeEvent, LifeState
 from .provider import DeterministicInferenceProvider, Sub2APIProvider
+
+
+THREAD_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,96}$")
 
 
 def _resolve_provider():
@@ -33,17 +38,53 @@ def create_app(
     *,
     checkpointer: MemoryCheckpointer | None = None,
     checkpoint_path: str | None = None,
-    thread_id: str = "default",
+    thread_id: str | None = None,
     store=None,
 ) -> FastAPI:
     app = FastAPI(title="StackChan LifeOS Brain", version="0.1.0")
     state: LifeState | None = None
     state_lock = None
     resolved_provider, provider_info = (provider, {"mode": "injected"}) if provider is not None else _resolve_provider()
+    resolved_thread_id = thread_id or os.environ.get("LIFEOS_THREAD_ID") or str(uuid4())
+    if THREAD_ID_RE.fullmatch(resolved_thread_id) is None:
+        raise ValueError("thread_id must be a bounded host-generated token")
     resolved_checkpointer = checkpointer
-    if resolved_checkpointer is None and checkpoint_path:
-        resolved_checkpointer = JsonFileCheckpointer(checkpoint_path)
+    resolved_checkpoint_path = checkpoint_path or os.environ.get("LIFEOS_CHECKPOINT_PATH")
+    if resolved_checkpointer is None and resolved_checkpoint_path:
+        resolved_checkpointer = JsonFileCheckpointer(resolved_checkpoint_path)
     resolved_checkpointer = resolved_checkpointer or MemoryCheckpointer()
+    checkpoint_mode = "json_file" if isinstance(resolved_checkpointer, JsonFileCheckpointer) else "memory"
+    provider_health = {
+        "checked": not isinstance(resolved_provider, Sub2APIProvider),
+        "status": "not_applicable" if not isinstance(resolved_provider, Sub2APIProvider) else "pending",
+        "model_available": None,
+    }
+
+    @app.on_event("startup")
+    async def check_provider_health() -> None:
+        if not isinstance(resolved_provider, Sub2APIProvider):
+            return
+        try:
+            result = await resolved_provider.transport.health_check()
+            models = result.get("data") if isinstance(result, dict) else None
+            model_ids = {
+                item.get("id")
+                for item in models
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            } if isinstance(models, list) else set()
+            model_available = (
+                resolved_provider.config.model in model_ids if model_ids else None
+            )
+            provider_health.update(
+                checked=True,
+                status="model_unavailable" if model_available is False else "healthy",
+                model_available=model_available,
+            )
+        except Exception:
+            # Do not expose upstream bodies, credentials, URLs, or exception text.
+            # The request path retains its normal bounded error mapping and
+            # DEGRADED_LOCAL behavior if the provider remains unavailable.
+            provider_health.update(checked=True, status="unavailable", model_available=None)
 
     def get_state_lock():
         nonlocal state_lock
@@ -74,6 +115,9 @@ def create_app(
             "graph_version": GRAPH_VERSION,
             "provider_contract_version": PROVIDER_CONTRACT_VERSION,
             "provider": provider_info,
+            "provider_health": dict(provider_health),
+            "thread_id": resolved_thread_id,
+            "checkpoint_mode": checkpoint_mode,
         }
 
     @app.post("/events")
@@ -84,7 +128,7 @@ def create_app(
                 event,
                 state,
                 provider=resolved_provider,
-                thread_id=thread_id,
+                thread_id=resolved_thread_id,
                 checkpointer=resolved_checkpointer,
                 store=store,
             )
@@ -102,7 +146,7 @@ def create_app(
                     event,
                     state,
                     provider=resolved_provider,
-                    thread_id=thread_id,
+                    thread_id=resolved_thread_id,
                     checkpointer=resolved_checkpointer,
                     store=store,
                 )

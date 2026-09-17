@@ -58,7 +58,7 @@ flowchart TB
 
 ### 3.1 图状态
 
-LangGraph 的 thread-scoped checkpoint 保存一次交互的可恢复状态；long-term store 保存跨 thread 的用户偏好与经过同意的事实。`thread_id` 是恢复游标，不能用用户输入直接拼接。生产环境使用持久化 checkpointer；开发环境可使用内存实现。
+LangGraph 的 thread-scoped checkpoint 保存一次交互的可恢复状态；long-term store 保存跨 thread 的用户偏好与经过同意的事实。`thread_id` 是恢复游标，不能用用户输入直接拼接。Brain API 默认生成不可预测的 host thread；生产部署通过 `LIFEOS_THREAD_ID` 固定身份，并用 `LIFEOS_CHECKPOINT_PATH` 启用本地持久 checkpointer。未配置路径时只使用开发态内存实现，`/health` 会明确报告 `checkpoint_mode`。
 
 建议状态字段（实现时以 Python 类型定义为准）：
 
@@ -102,6 +102,11 @@ Adapter 负责：
 - 过滤 raw media、路径、环境变量、nonce、设备 wire envelope 和工具原始输出；
 - 将 401/403、429、5xx、timeout、network、invalid response 映射为稳定错误类别；
 - 不把 sub2api response ID 当作 LangGraph thread/checkpoint，也不让远端直接执行工具。
+
+Brain 服务启动时通过 `/v1/models` 执行一次受限健康检查，仅公开
+`healthy` / `model_unavailable` / `unavailable` 和模型是否存在；上游响应体、异常文本与凭据
+不会进入健康接口。推理请求中的内部 `ProviderRequest.thread_id` 绑定实际 graph thread，
+不再使用全局固定值。
 
 API key 不进入 graph state、checkpoint、日志或设备协议。真实调用必须显式 opt-in；
 默认开发/回放使用 mock 或 deterministic provider。完整计划见

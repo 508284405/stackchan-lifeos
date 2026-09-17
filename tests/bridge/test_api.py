@@ -40,8 +40,19 @@ def test_api_exposes_device_and_command_lifecycle_without_raw_wire_route():
     assert health.json()["bind_host"] == "127.0.0.1"
     assert health.json()["feature_gates"] == {
         "control": True,
+        "status": True,
+        "motion": True,
+        "safety": True,
+        "emergency_stop": True,
         "manual_control_v1": False,
+        "manual_camera_preview": False,
         "media": False,
+        "behavior": False,
+        "speech": False,
+        "maintenance": False,
+        "firmware_rollout": False,
+        "usb_add": False,
+        "diagnostics": True,
     }
     assert devices.json()["items"][0]["session"]["state"] == "online"
     assert detail.status_code == 200

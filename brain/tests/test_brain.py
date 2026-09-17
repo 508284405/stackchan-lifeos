@@ -2,9 +2,10 @@ import asyncio
 
 from brain.arbitration import arbitrate
 from brain.flow import run_cognitive_cycle
-from brain.models import BehaviorIntent, LifeEvent, LifeState
+from brain.models import BehaviorIntent, LifeEvent, LifeState, ProviderConfig
 from brain.legacy_codex import CodexAppServerProvider
 from brain.api import create_app
+from brain.provider import Sub2APIProvider
 from fastapi.testclient import TestClient
 
 
@@ -61,9 +62,12 @@ def test_codex_provider_initializes_before_turn():
 
 def test_http_event_response_is_json_serializable():
     with TestClient(create_app()) as client:
+        health = client.get("/health").json()
         response = client.post("/events", json={"kind": "user", "text": "hello"})
     assert response.status_code == 200
     assert response.json()["intent"]["name"] == "greet"
+    assert health["thread_id"] != "default"
+    assert health["checkpoint_mode"] == "memory"
 
 
 def test_api_can_rehydrate_a_file_checkpoint(tmp_path):
@@ -77,3 +81,48 @@ def test_api_can_rehydrate_a_file_checkpoint(tmp_path):
         response = client.post("/events", json={"kind": "system", "id": "api-event-2", "priority": 20})
         assert response.status_code == 200
         assert response.json()["state"]["interaction_count"] == 1
+
+
+def test_api_uses_environment_thread_and_durable_checkpoint(monkeypatch, tmp_path):
+    monkeypatch.setenv("LIFEOS_THREAD_ID", "host-thread-01")
+    monkeypatch.setenv("LIFEOS_CHECKPOINT_PATH", str(tmp_path / "brain.json"))
+
+    with TestClient(create_app()) as client:
+        health = client.get("/health").json()
+
+    assert health["thread_id"] == "host-thread-01"
+    assert health["checkpoint_mode"] == "json_file"
+
+
+def test_sub2api_health_is_checked_without_exposing_upstream_details():
+    class Transport:
+        def __init__(self):
+            self.health_calls = 0
+
+        async def health_check(self):
+            self.health_calls += 1
+            return {"data": [{"id": "test-model"}], "secret": "must-not-leak"}
+
+        async def create_response(self, payload):
+            return {"id": "r", "intents": [{"name": "idle", "priority": 1}]}
+
+    transport = Transport()
+    provider = Sub2APIProvider(
+        ProviderConfig(
+            base_url="http://127.0.0.1:8080",
+            model="test-model",
+            api_key="test-key",
+        ),
+        transport=transport,
+    )
+
+    with TestClient(create_app(provider=provider, thread_id="provider-thread")) as client:
+        health = client.get("/health").json()
+
+    assert transport.health_calls == 1
+    assert health["provider_health"] == {
+        "checked": True,
+        "status": "healthy",
+        "model_available": True,
+    }
+    assert "must-not-leak" not in str(health)

@@ -19,6 +19,11 @@ Web Bridge 是浏览器与 StackChan 设备之间的主机控制面。浏览器�
   QVGA JPEG 摄像头预览；不显示 raw envelope、PWM、GPIO、I²C 或 maintenance 入口。
   四向手动控制入口始终可见，但在 `manual_control_v1` 未协商、服务端 gate 关闭或安全
   状态不允许时显示为禁用；不会因此发送控制帧。
+- Tasks 显示本次浏览器会话创建的批量任务及逐设备结果；批量 UI 仅暴露 `status` 和安全
+  `pause`，不暴露连续手控、恢复、回中或维护动作。Audit & diagnostics 保留事件流并允许
+  显式下载脱敏诊断包；System 显示 Bridge 绑定、安全限制和公开 feature gates。
+- 行为/语音表单只提交注册的高层 `behavior.play` / `speech.play` DTO，并在 Bridge gate、
+  设备 capability、在线状态或安全状态不满足时保持禁用。维护与 OTA 执行 UI 仍不展示。
 
 ## API/服务能力
 

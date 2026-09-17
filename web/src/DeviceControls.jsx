@@ -12,6 +12,22 @@ const FAILURE_STATES = new Set([
   "cancelled",
 ]);
 
+// Keep the browser catalog aligned with bridge/intent.py. These values are
+// semantic names only; no hardware or wire parameters are accepted here.
+const REGISTERED_BEHAVIORS = [
+  "still",
+  "blink",
+  "small_nod",
+  "head_tilt",
+  "greet",
+  "listen",
+  "thinking",
+  "speaking",
+  "sleep",
+  "wake",
+];
+const REGISTERED_VOICES = ["default", "calm", "bright"];
+
 function commandResultText(command, t) {
   if (!command) return null;
   if (command.state) {
@@ -523,11 +539,163 @@ function CameraPreview({ device, mediaEnabled = false, channel, onVideoReady }) 
   );
 }
 
+function intentDisabledReason({ gateEnabled, capabilityEnabled, online, safetyClear, paused, t }) {
+  if (!gateEnabled) return t("intent.gateDisabled");
+  if (!capabilityEnabled) return t("intent.capabilityMissing");
+  if (!online) return t("intent.offline");
+  if (!safetyClear || paused) return t("intent.safetyBlocked");
+  return null;
+}
+
+function SemanticIntents({ device, featureGates, pending, onSubmit }) {
+  const { t } = useI18n();
+  const [behaviorName, setBehaviorName] = useState("greet");
+  const [behaviorIntensity, setBehaviorIntensity] = useState("0.5");
+  const [behaviorDuration, setBehaviorDuration] = useState("1000");
+  const [speechText, setSpeechText] = useState("");
+  const [speechVoice, setSpeechVoice] = useState("default");
+  const session = currentSession(device);
+  const capabilities = new Set(session?.capabilities || device?.capabilities || []);
+  const health = device?.health || {};
+  const online = session?.state === "online" || session?.state === "degraded";
+  const safetyClear = health.fault !== true && health.feedback_frozen !== true && health.link_lost !== true;
+  const behaviorGate = featureGates?.behavior === true;
+  const speechGate = featureGates?.speech === true;
+  const behaviorCapability = capabilities.has("behavior");
+  const speechCapability = capabilities.has("speech");
+  const behaviorReady = behaviorGate && behaviorCapability && online && safetyClear && health.paused !== true;
+  const speechReady = speechGate && speechCapability && online && safetyClear && health.paused !== true;
+  const behaviorReason = intentDisabledReason({
+    gateEnabled: behaviorGate,
+    capabilityEnabled: behaviorCapability,
+    online,
+    safetyClear,
+    paused: health.paused === true,
+    t,
+  });
+  const speechReason = intentDisabledReason({
+    gateEnabled: speechGate,
+    capabilityEnabled: speechCapability,
+    online,
+    safetyClear,
+    paused: health.paused === true,
+    t,
+  });
+
+  const submitBehavior = (event) => {
+    event.preventDefault();
+    if (!behaviorReady || pending !== null) return;
+    onSubmit("behavior.play", {
+      name: behaviorName,
+      intensity: Number(behaviorIntensity),
+      duration_ms: Number(behaviorDuration),
+    });
+  };
+
+  const submitSpeech = (event) => {
+    event.preventDefault();
+    if (!speechReady || pending !== null || !speechText.trim()) return;
+    onSubmit("speech.play", { text: speechText, voice: speechVoice });
+  };
+
+  return (
+    <section className="control-section semantic-section" aria-labelledby="semantic-heading">
+      <div className="control-heading">
+        <div>
+          <h4 id="semantic-heading">{t("intent.heading")}</h4>
+          <p>{t("intent.copy")}</p>
+        </div>
+        <span className="control-state" data-state={behaviorReady || speechReady ? "ready" : "disabled"}>
+          {behaviorReady || speechReady ? t("control.ready") : t("control.disabled")}
+        </span>
+      </div>
+      <div className="intent-grid">
+        <form className="intent-form" onSubmit={submitBehavior}>
+          <div className="intent-form-heading">
+            <h5>{t("behavior.heading")}</h5>
+            <span className="intent-capability">behavior</span>
+          </div>
+          <label>
+            <span>{t("behavior.name")}</span>
+            <select value={behaviorName} onChange={(event) => setBehaviorName(event.target.value)}>
+              {REGISTERED_BEHAVIORS.map((name) => <option value={name} key={name}>{name}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>{t("behavior.intensity")}</span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.1"
+              value={behaviorIntensity}
+              onChange={(event) => setBehaviorIntensity(event.target.value)}
+            />
+            <output className="range-value">{Number(behaviorIntensity).toFixed(1)}</output>
+          </label>
+          <label>
+            <span>{t("behavior.duration")}</span>
+            <select value={behaviorDuration} onChange={(event) => setBehaviorDuration(event.target.value)}>
+              {[500, 1000, 2000, 5000, 10000].map((duration) => (
+                <option value={duration} key={duration}>{t("behavior.durationValue", duration)}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="quiet-button"
+            type="submit"
+            disabled={!behaviorReady || pending !== null}
+            title={behaviorReason || undefined}
+          >
+            {pending === "behavior.play" ? t("control.sending") : t("behavior.play")}
+          </button>
+          <p className="intent-status" data-state={behaviorReady ? "ready" : "disabled"}>
+            {behaviorReason || t("intent.highLevelOnly")}
+          </p>
+        </form>
+        <form className="intent-form" onSubmit={submitSpeech}>
+          <div className="intent-form-heading">
+            <h5>{t("speech.heading")}</h5>
+            <span className="intent-capability">speech</span>
+          </div>
+          <label>
+            <span>{t("speech.text")}</span>
+            <textarea
+              rows="3"
+              maxLength="1000"
+              value={speechText}
+              onChange={(event) => setSpeechText(event.target.value)}
+              placeholder={t("speech.placeholder")}
+            />
+          </label>
+          <label>
+            <span>{t("speech.voice")}</span>
+            <select value={speechVoice} onChange={(event) => setSpeechVoice(event.target.value)}>
+              {REGISTERED_VOICES.map((voice) => <option value={voice} key={voice}>{voice}</option>)}
+            </select>
+          </label>
+          <button
+            className="quiet-button"
+            type="submit"
+            disabled={!speechReady || pending !== null || !speechText.trim()}
+            title={speechReason || undefined}
+          >
+            {pending === "speech.play" ? t("control.sending") : t("speech.play")}
+          </button>
+          <p className="intent-status" data-state={speechReady ? "ready" : "disabled"}>
+            {speechReason || t("intent.highLevelOnly")}
+          </p>
+        </form>
+      </div>
+    </section>
+  );
+}
+
 export function DeviceControls({ device, featureGates, onChanged }) {
   const { t } = useI18n();
   const [pending, setPending] = useState(null);
   const [message, setMessage] = useState(null);
-  const [manualPreviewStopVersion, setManualPreviewStopVersion] = useState(0);
+  const [videoReady, setVideoReady] = useState(false);
   const session = currentSession(device);
   const capabilities = new Set(session?.capabilities || device?.capabilities || []);
   const health = device?.health || {};
@@ -550,8 +718,12 @@ export function DeviceControls({ device, featureGates, onChanged }) {
   const manualReady = online && controlEnabled && manualEnabled &&
     capabilities.has("manual_control_v1") && safetyClear && feedbackFresh &&
     health.paused !== true;
+  const channel = useControlChannel(
+    device?.device_id,
+    online && (manualEnabled || mediaEnabled),
+  );
 
-  const submit = async (type, emergency = false) => {
+  const submit = async (type, params = {}, emergency = false) => {
     setPending(type);
     setMessage(null);
     const path = emergency
@@ -562,7 +734,7 @@ export function DeviceControls({ device, featureGates, onChanged }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         cache: "no-store",
-        body: JSON.stringify(emergency ? {} : { type, params: {} }),
+        body: JSON.stringify(emergency ? {} : { type, params }),
       });
       const data = await settleCommand(await parseResponse(response));
       setMessage(commandResultText(data, t));
@@ -608,22 +780,29 @@ export function DeviceControls({ device, featureGates, onChanged }) {
             className="danger-button"
             type="button"
             disabled={!online || !controlEnabled || !(capabilities.has("safety") || capabilities.has("emergency_stop")) || pending !== null}
-            onClick={() => submit("emergency_stop", true)}
+            onClick={() => submit("emergency_stop", {}, true)}
           >
             {pending === "emergency_stop" ? t("control.sending") : t("control.emergency")}
           </button>
         </div>
         {message && <p className="control-message" role="status">{message}</p>}
       </section>
+      <SemanticIntents
+        device={device}
+        featureGates={featureGates}
+        pending={pending}
+        onSubmit={submit}
+      />
       <ManualControl
         device={device}
-        enabled={manualReady}
-        onCameraPreviewStopped={() => setManualPreviewStopVersion((value) => value + 1)}
+        enabled={manualReady && videoReady}
+        channel={channel}
       />
       <CameraPreview
         device={device}
         mediaEnabled={mediaEnabled}
-        manualPreviewStopVersion={manualPreviewStopVersion}
+        channel={channel}
+        onVideoReady={setVideoReady}
       />
     </>
   );

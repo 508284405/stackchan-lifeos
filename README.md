@@ -32,10 +32,12 @@
   触摸、长稳和整体阶段出口仍按上述 PASS/BLOCKED/NOT TESTED 划分。
 - Web Bridge W1 host-only/fake-device 核心已实现；真实一台设备的 status 控制和 camera preview
   已单独通过，仍不代表真实远程运动或 200 台容量已支持。
-- W2 已提供 React（Vite 构建，中文默认、可切换英文）的 Overview/Devices/detail 监控界面、REST snapshot 和 cursor WebSocket；
-  fake/API 已验证；真实 USB camera preview/browser E2E 已按硬件/端口证据单独报告。
+- W2 已提供 React（Vite 构建，中文默认、可切换英文）的 Overview、Devices、Tasks、
+  Audit & diagnostics、System 界面、REST snapshot 和 cursor WebSocket；支持设备多选、安全
+  离散批量命令、逐设备结果、诊断导出和 feature gate 可见性。
 - W3/W4 已提供默认关闭的 host-only semantic intent、lease/dead-man、独立急停和
-  BatchTask API；firmware manual/intent execution、maintenance/OTA 仍未启用。
+  BatchTask API；maintenance/签名 OTA 的 Bridge/firmware 路径已实现但默认门禁关闭，A/B
+  布局迁移、信任配置和真实恢复仍是独立门禁；firmware semantic intent execution 尚未启用。
 - Web 控制与摄像头预览已接入 Bridge/UI：离散控制和远程急停走设备 ACK 生命周期；摄像头
   使用显式 start/stop、固定 QVGA JPEG、最新帧 MJPEG 出口，真实 `stackchan-01` 预览已通过。
   连续手动控制仍需 `manual_control_v1` 固件/HIL 门禁。
@@ -64,14 +66,22 @@ python3.12 -m venv .venv
 .venv/bin/python -m brain.cli simulate --text "今天下午有什么安排？"
 ```
 
+Brain 服务生产部署应固定 host thread 并启用持久 checkpoint；未配置路径时明确使用开发态
+内存实现。真实 Sub2API 模式启动时会执行一次受限的模型健康检查：
+
+```bash
+export LIFEOS_THREAD_ID=stackchan-host-01
+export LIFEOS_CHECKPOINT_PATH=/var/lib/stackchan-lifeos/brain-checkpoints.json
+```
+
 连接真实设备（USB 串口）：
 
 ```bash
 # 列出候选串口（不开端口）；--probe 追加只读 hello 握手识别 device_id/MAC/固件
 PYTHONPATH=. .venv/bin/python tools/scan_usb_devices.py [--probe] [--json]
 # 用识别到的身份启动真实 Web Bridge + 控制台（默认 http://127.0.0.1:8766）。
-# 此生产 USB 入口固定启用真实摄像头与 manual_control_v1；它会在设备未声明
-# 相应 capability 或安全空闲检查失败时拒绝启动。
+# 此生产 USB 入口固定启用真实摄像头；manual_control_v1 还要求显式提供与当前
+# device/hardware/firmware 匹配的 HIL evidence，否则保持关闭。
 PYTHONPATH=. .venv/bin/python tools/web_bridge_real_server.py --usb-port /dev/cu.usbmodemXXXX
 ```
 

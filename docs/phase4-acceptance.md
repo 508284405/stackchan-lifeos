@@ -10,6 +10,11 @@
 
 阶段 4 当前为 **PARTIAL**，不能标记为整体 PASS。
 
+2026-09-17 代码更新补齐了 Web Console 的 Tasks、Audit & diagnostics、System 页面区域、
+设备多选与安全离散批量命令、逐设备结果、诊断导出以及 capability/gate 约束的行为/语音
+表单。维护与 OTA 执行入口继续隐藏，避免在后果确认和真实恢复证据不足时暴露半安全按钮。
+真实网络、容量和物理动作状态不因该 UI 交付而升级。
+
 已通过的主机侧基线：W1/W2 fake Bridge、W3 host-only lease/dead-man、W4 batch 与运维
 框架、W5 Edge contract/fake、W6 control-plane design contract、W7 可重复容量方法。
 

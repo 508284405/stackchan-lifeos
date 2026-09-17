@@ -13,7 +13,7 @@ web-check:
 		if [ ! -d web/node_modules ]; then \
 			(cd web && npm ci --silent) || { echo "SKIP web build: npm install failed (offline? dist/ is committed)"; exit 0; }; \
 		fi; \
-		(cd web && npm run build --silent); \
+		(cd web && npm run build --silent && node control-bar.test.mjs); \
 	else echo "SKIP web build: node executable not installed (dist/ is committed)"; fi
 
 firmware-test:

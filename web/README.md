@@ -18,8 +18,8 @@ using `visible_devices` plus a resumable cursor.
 
 - `npm install` / `npm ci` — install toolchain (Node 18+).
 - `npm run dev` — Vite dev server with API/WS proxy for live development.
-- `npm run build` — rebuild `dist/` (`make web-check` does this; skipped
-  gracefully when Node/npm are unavailable).
+- `npm run build` — rebuild `dist/`; `make web-check` also runs the source/dist
+  safety regression checks and is skipped gracefully when Node/npm are unavailable.
 
 ## i18n
 
@@ -38,3 +38,11 @@ and never records or persists camera bytes. The four-way manual control pad
 remains visible as a disabled affordance until the device declares
 `manual_control_v1` and the server gate is enabled; raw serial, raw `lifeos.v1`
 envelopes, and hardware parameters are never accepted by the browser API.
+
+The five product sections are Overview, Devices, Tasks, Audit & diagnostics,
+and System. Devices supports multi-selection, but the batch UI deliberately
+limits operators to `status` and safety-oriented `pause`; per-device results
+remain visible in Tasks. Behavior/speech forms accept only registered semantic
+values and remain disabled unless both Bridge gates and device capabilities are
+present. Maintenance and OTA execution are intentionally absent from the UI
+until their consequence-confirmation and physical recovery gates are accepted.

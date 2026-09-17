@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 import ssl
+from contextvars import ContextVar
 from abc import ABC, abstractmethod
 from typing import Any, Protocol
 
@@ -298,6 +299,14 @@ class Sub2APIProvider(InferenceProvider):
         self.last_result: ProviderResult | None = None
         self.last_plan: IntentPlan | None = None
         self.last_tool_intents: list[ToolIntent] = []
+        self._thread_id: ContextVar[str] = ContextVar(
+            f"sub2api_thread_id_{id(self)}", default="provider"
+        )
+
+    def bind_thread(self, thread_id: str) -> None:
+        if not isinstance(thread_id, str) or not thread_id or len(thread_id) > 96:
+            raise ValueError("provider thread_id must be a bounded non-empty string")
+        self._thread_id.set(thread_id)
 
     async def decide(self, event: LifeEvent, state: LifeState) -> list[BehaviorIntent]:
         self.last_tool_intents = []
@@ -391,7 +400,7 @@ class Sub2APIProvider(InferenceProvider):
                 IntentPlan(
                     request=ProviderRequest(
                         run_id=event.id,
-                        thread_id="provider",
+                        thread_id=self._thread_id.get(),
                         event_id=event.id,
                         device_id=state.device_id,
                         event_kind=str(event.kind.value if hasattr(event.kind, "value") else event.kind),

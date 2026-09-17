@@ -13,8 +13,61 @@ import {
   labelState,
 } from "./lib.js";
 
-function Topbar({ transport }) {
+const BATCH_COMMANDS = [
+  { type: "control.status", labelKey: "tasks.command.status", capability: "status", gate: "status" },
+  { type: "control.pause", labelKey: "tasks.command.pause", capability: "motion", gate: "motion" },
+];
+const BATCH_TERMINAL_STATES = new Set(["completed", "partial", "failed", "cancelled", "expired"]);
+const KNOWN_FEATURE_GATES = [
+  "control",
+  "status",
+  "motion",
+  "safety",
+  "emergency_stop",
+  "manual_control_v1",
+  "manual_camera_preview",
+  "media",
+  "behavior",
+  "speech",
+  "usb_add",
+  "diagnostics",
+  "maintenance",
+  "factory_reset",
+  "firmware_rollout",
+];
+
+function isGateEnabled(featureGates, gate) {
+  return featureGates?.[gate] === true;
+}
+
+function batchStateLabel(state, t) {
+  return t(`batch.state.${state}`, state);
+}
+
+function batchTargetDetail(target, t) {
+  const reason = target?.error?.reason || target?.error?.code;
+  if (reason) return t("batch.targetError", reason);
+  if (target?.result?.state) return t(`command.state.${target.result.state}`);
+  return "—";
+}
+
+async function readJson(response) {
+  try {
+    return await response.json();
+  } catch {
+    return {};
+  }
+}
+
+function Topbar({ transport, activeSection = "overview", onNavigate = () => {} }) {
   const { t, lang, toggleLang } = useI18n();
+  const navItems = [
+    ["overview", "nav.overview"],
+    ["devices", "nav.devices"],
+    ["tasks", "nav.tasks"],
+    ["audit", "nav.audit"],
+    ["system", "nav.system"],
+  ];
   return (
     <header className="topbar">
       <div className="brand-lockup" aria-label="StackChan LifeOS Web Bridge">
@@ -25,9 +78,17 @@ function Topbar({ transport }) {
         </div>
       </div>
       <nav className="main-nav" aria-label="Primary navigation">
-        <a className="active" href="#overview">{t("nav.overview")}</a>
-        <a href="#devices">{t("nav.devices")}</a>
-        <a href="#events">{t("nav.events")}</a>
+        {navItems.map(([id, labelKey]) => (
+          <a
+            key={id}
+            className={activeSection === id ? "active" : undefined}
+            href={`#${id}`}
+            aria-current={activeSection === id ? "page" : undefined}
+            onClick={() => onNavigate(id)}
+          >
+            {t(labelKey)}
+          </a>
+        ))}
       </nav>
       <div className="topbar-actions">
         <div className="transport-status" data-status={transport.status}>
@@ -114,7 +175,7 @@ function OverviewSection({ devices, health, onRefresh }) {
   );
 }
 
-function DeviceList({ devices, filter, selectedId, onSelect }) {
+function DeviceList({ devices, filter, selectedId, selectedIds = [], onSelect, onToggle = () => {} }) {
   const { t } = useI18n();
   const trimmed = filter.trim().toLowerCase();
   const visible = devices.filter((device) => deviceMatchesFilter(device, trimmed));
@@ -132,26 +193,105 @@ function DeviceList({ devices, filter, selectedId, onSelect }) {
         {visible.map((device) => {
           const sessionState = currentSession(device)?.state || "offline";
           return (
-            <button
+            <div
               key={device.device_id}
-              type="button"
               className="device-row"
               data-state={sessionState}
               role="option"
               aria-selected={String(device.device_id === selectedId)}
-              onClick={() => onSelect(device.device_id)}
             >
-              <span className="row-dot" aria-hidden="true"></span>
-              <span>
-                <span className="row-name">{device.display_name || device.device_id}</span>
-                <span className="row-id">{device.device_id}</span>
-              </span>
+              <label className="device-select-control">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.includes(device.device_id)}
+                  onChange={() => onToggle(device.device_id)}
+                  aria-label={t("batch.selectDevice", device.display_name || device.device_id)}
+                />
+                <span className="sr-only">{t("batch.select")}</span>
+              </label>
+              <button
+                type="button"
+                className="device-row-main"
+                aria-label={device.display_name || device.device_id}
+                onClick={() => onSelect(device.device_id)}
+              >
+                <span className="row-dot" aria-hidden="true"></span>
+                <span>
+                  <span className="row-name">{device.display_name || device.device_id}</span>
+                  <span className="row-id">{device.device_id}</span>
+                </span>
+              </button>
               <span className="row-state">{labelState(sessionState, t)}</span>
-            </button>
+            </div>
           );
         })}
       </div>
     </aside>
+  );
+}
+
+function DiagnosticExport({ device, capabilities, featureGates }) {
+  const { t } = useI18n();
+  const [state, setState] = useState("idle");
+  const [message, setMessage] = useState(null);
+  const hasDiagnosticCapability = capabilities.has("diagnostics") || capabilities.has("health") || capabilities.has("status");
+  const gateEnabled = featureGates?.diagnostics !== false;
+  const canExport = gateEnabled && hasDiagnosticCapability;
+
+  const exportBundle = async () => {
+    if (!canExport || state === "exporting") return;
+    setState("exporting");
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/v1/devices/${encodeURIComponent(device.device_id)}/diagnostics`, {
+        cache: "no-store",
+      });
+      const data = await readJson(response);
+      if (!response.ok || !data.bundle_id) throw new Error(data?.detail || t("diagnostics.failed"));
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `lifeos-diagnostics-${device.device_id}-${Date.now()}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setState("done");
+      setMessage(t("diagnostics.downloaded"));
+    } catch (error) {
+      setState("error");
+      setMessage(error.message || t("diagnostics.failed"));
+    }
+  };
+
+  const disabledReason = !gateEnabled
+    ? t("diagnostics.gateDisabled")
+    : !hasDiagnosticCapability
+      ? t("diagnostics.capabilityMissing")
+      : null;
+
+  return (
+    <section className="detail-section diagnostics-section" aria-labelledby="diagnostics-heading">
+      <div className="detail-section-heading">
+        <div>
+          <h4 id="diagnostics-heading">{t("diagnostics.heading")}</h4>
+          <p className="detail-section-copy">{t("diagnostics.copy")}</p>
+        </div>
+        <button
+          className="quiet-button"
+          type="button"
+          disabled={!canExport || state === "exporting"}
+          onClick={exportBundle}
+          title={disabledReason || undefined}
+        >
+          {state === "exporting" ? t("diagnostics.exporting") : t("diagnostics.export")}
+        </button>
+      </div>
+      <p className="diagnostics-status" data-state={canExport ? state : "disabled"} role={message ? "status" : undefined}>
+        {message || disabledReason || t("diagnostics.copy")}
+      </p>
+    </section>
   );
 }
 
@@ -234,6 +374,7 @@ function Inspector({ device, featureGates, onChanged }) {
           ))}
         </ul>
       </section>
+      <DiagnosticExport device={device} capabilities={new Set(capabilities)} featureGates={featureGates} />
       <div className="monitoring-note">
         <span aria-hidden="true">⌁</span>
         <p>{t("monitoring.note")}</p>
@@ -351,10 +492,44 @@ function UsbScanPanel({ onDeviceAdded }) {
   );
 }
 
-function DevicesSection({ devices, featureGates, selectedId, onSelect, onDeviceAdded, onChanged }) {
+function DevicesSection({
+  devices,
+  featureGates,
+  selectedId,
+  selectedIds = [],
+  onSelect,
+  onToggle = () => {},
+  onToggleAll = () => {},
+  onClearSelection = () => {},
+  onDeviceAdded,
+  onChanged,
+  onCreateBatch = () => {},
+  batchState,
+}) {
   const { t } = useI18n();
   const [filter, setFilter] = useState("");
   const [scanOpen, setScanOpen] = useState(false);
+  const trimmed = filter.trim().toLowerCase();
+  const visible = devices.filter((device) => deviceMatchesFilter(device, trimmed));
+  const visibleIds = visible.map((device) => device.device_id);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.includes(id));
+  const selectedDevices = devices.filter((device) => selectedIds.includes(device.device_id));
+  const [batchCommand, setBatchCommand] = useState(BATCH_COMMANDS[0].type);
+  const command = BATCH_COMMANDS.find((item) => item.type === batchCommand) || BATCH_COMMANDS[0];
+  const controlGate = featureGates?.control === true;
+  const hasCapableTarget = selectedDevices.some((device) => {
+    const session = currentSession(device);
+    const capabilities = session?.capabilities || device.capabilities || [];
+    return capabilities.includes(command.capability);
+  });
+  const batchReady = selectedIds.length > 0 && controlGate && isGateEnabled(featureGates, command.gate) && hasCapableTarget;
+  const batchReason = selectedIds.length === 0
+    ? t("batch.none")
+    : !controlGate || !isGateEnabled(featureGates, command.gate)
+      ? t("batch.gate")
+      : !hasCapableTarget
+        ? t("batch.capability")
+        : null;
 
   return (
     <section id="devices" className="workspace-section" aria-labelledby="devices-title">
@@ -380,8 +555,49 @@ function DevicesSection({ devices, featureGates, selectedId, onSelect, onDeviceA
         </div>
       </div>
       {scanOpen && <UsbScanPanel onDeviceAdded={onDeviceAdded} />}
+      <div className="batch-action-bar" role="region" aria-label={t("batch.action")}>
+        <div className="batch-selection-summary">
+          <span className="batch-count">{t("batch.selected", selectedIds.length)}</span>
+          <button className="text-button" type="button" onClick={() => onToggleAll(visibleIds)} disabled={!visibleIds.length}>
+            {allVisibleSelected ? t("batch.clear") : t("batch.selectAll")}
+          </button>
+          {selectedIds.length > 0 && !allVisibleSelected && (
+            <button className="text-button" type="button" onClick={onClearSelection}>{t("batch.clear")}</button>
+          )}
+        </div>
+        <div className="batch-action-controls">
+          <label className="batch-command-select">
+            <span className="sr-only">{t("batch.action")}</span>
+            <select value={batchCommand} onChange={(event) => setBatchCommand(event.target.value)}>
+              {BATCH_COMMANDS.map((item) => <option key={item.type} value={item.type}>{t(item.labelKey)}</option>)}
+            </select>
+          </label>
+          <button
+            className="quiet-button"
+            type="button"
+            disabled={!batchReady || batchState === "submitting"}
+            onClick={() => onCreateBatch({
+              deviceIds: selectedIds,
+              commandType: command.type,
+              params: {},
+            })}
+            title={batchReason || undefined}
+          >
+            {batchState === "submitting" ? t("batch.submitting") : t("batch.submit")}
+          </button>
+        </div>
+        {batchReason && <p className="batch-message" role="status">{batchReason}</p>}
+        {batchState === "error" && <p className="batch-message" role="alert">{t("batch.failed")}</p>}
+      </div>
       <div className="workspace-grid">
-        <DeviceList devices={devices} filter={filter} selectedId={selectedId} onSelect={onSelect} />
+        <DeviceList
+          devices={devices}
+          filter={filter}
+          selectedId={selectedId}
+          selectedIds={selectedIds}
+          onSelect={onSelect}
+          onToggle={onToggle}
+        />
         <article className="inspector-panel" aria-labelledby="inspector-title">
           <Inspector
             device={devices.find((item) => item.device_id === selectedId) || null}
@@ -394,16 +610,70 @@ function DevicesSection({ devices, featureGates, selectedId, onSelect, onDeviceA
   );
 }
 
-function EventsSection({ events }) {
+function TasksSection({ tasks, refreshing }) {
+  const { t } = useI18n();
+  const ordered = [...tasks].reverse();
+  return (
+    <section id="tasks" className="workspace-section tasks-section" aria-labelledby="tasks-title">
+      <div className="workspace-heading">
+        <div>
+          <p className="eyebrow">{t("tasks.eyebrow")}</p>
+          <h2 id="tasks-title">{t("tasks.title")}</h2>
+          <p className="muted">{t("tasks.copy")}</p>
+        </div>
+        {refreshing && <span className="freshness" data-state="pending">{t("tasks.refreshing")}</span>}
+      </div>
+      {ordered.length === 0 ? <div className="empty-state">{t("tasks.empty")}</div> : (
+        <div className="task-list">
+          {ordered.map((task) => (
+            <article className="task-card" key={task.task_id}>
+              <div className="task-card-heading">
+                <div>
+                  <p className="mono">{task.task_id}</p>
+                  <h3>{task.command_type}</h3>
+                </div>
+                <span className="state-badge" data-state={task.aggregate_state}>
+                  {batchStateLabel(task.aggregate_state, t)}
+                </span>
+              </div>
+              <dl className="task-summary">
+                <div><dt>{t("tasks.targets")}</dt><dd>{task.targets?.length || 0}</dd></div>
+                <div><dt>{t("tasks.correlation")}</dt><dd className="mono">{task.correlation_id || "—"}</dd></div>
+                <div><dt>{t("tasks.created")}</dt><dd>{eventTimeString(task.created_at)}</dd></div>
+              </dl>
+              <div className="task-table-wrap">
+                <table className="task-table">
+                  <thead><tr><th>{t("tasks.device")}</th><th>{t("tasks.state")}</th><th>{t("tasks.detail")}</th></tr></thead>
+                  <tbody>
+                    {(task.targets || []).map((target) => (
+                      <tr key={target.device_id}>
+                        <td className="mono">{target.device_id}</td>
+                        <td>{batchStateLabel(target.state, t)}</td>
+                        <td>{batchTargetDetail(target, t)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AuditSection({ events }) {
   const { t } = useI18n();
   const recent = useMemo(() => [...events].reverse().slice(0, 24), [events]);
 
   return (
-    <section id="events" className="events-section" aria-labelledby="events-title">
+    <section id="audit" className="events-section" aria-labelledby="events-title">
       <div className="workspace-heading">
         <div>
           <p className="eyebrow">{t("events.eyebrow")}</p>
           <h2 id="events-title">{t("events.title")}</h2>
+          <p className="muted">{t("events.copy")}</p>
         </div>
         <p className="muted">{t("events.retained", events.length)}</p>
       </div>
@@ -426,10 +696,66 @@ function EventsSection({ events }) {
   );
 }
 
+function SystemSection({ health }) {
+  const { t } = useI18n();
+  const featureGates = health?.feature_gates || {};
+  const loopback = health?.bind_host === "127.0.0.1" || health?.bind_host === "::1";
+  return (
+    <section id="system" className="workspace-section system-section" aria-labelledby="system-title">
+      <div className="workspace-heading">
+        <div>
+          <p className="eyebrow">{t("system.eyebrow")}</p>
+          <h2 id="system-title">{t("system.title")}</h2>
+          <p className="muted">{t("system.copy")}</p>
+        </div>
+      </div>
+      <div className="system-grid">
+        <section className="detail-section">
+          <div className="detail-section-heading"><h3>{t("system.health")}</h3></div>
+          <dl className="detail-list">
+            <div><dt>{t("system.health")}</dt><dd>{health?.ok === true ? t("system.health.ok") : t("system.health.unknown")}</dd></div>
+            <div><dt>{t("system.service")}</dt><dd className="mono">{health?.service || "—"}</dd></div>
+            <div><dt>{t("system.bind")}</dt><dd className="mono">{health?.bind_host || "—"}</dd></div>
+            <div><dt>{t("system.registered")}</dt><dd>{health?.registered_devices ?? "—"}</dd></div>
+            <div><dt>{t("system.online")}</dt><dd>{health?.online_devices ?? "—"}</dd></div>
+            <div><dt>{t("system.origin")}</dt><dd>{health?.origin_allowlist_configured ? t("system.configured") : t("system.notConfigured")}</dd></div>
+          </dl>
+        </section>
+        <section className="detail-section">
+          <div className="detail-section-heading"><h3>{t("system.deployment")}</h3></div>
+          <p>{t("system.noAuth")}</p>
+          <p className="system-boundary" data-state={loopback ? "ok" : "warn"}>
+            {loopback ? t("system.loopback") : t("system.trustedLan")}
+          </p>
+          <p className="muted">{t("system.maintenanceHidden")}</p>
+        </section>
+      </div>
+      <section className="detail-section system-gates">
+        <div className="detail-section-heading"><h3>{t("system.featureGates")}</h3></div>
+        <ul className="gate-list">
+          {KNOWN_FEATURE_GATES.map((gate) => {
+            const value = featureGates[gate];
+            return (
+              <li key={gate} data-state={value === true ? "enabled" : value === false ? "disabled" : "unknown"}>
+                <span>{t(`system.gate.${gate}`, gate)}</span>
+                <strong>{value === true ? t("system.gate.enabled") : value === false ? t("system.gate.disabled") : t("system.gate.unknown")}</strong>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    </section>
+  );
+}
+
 export default function App() {
   const { t } = useI18n();
   const { devices, health, events, transport, refreshSnapshot } = useBridgeData();
   const [selectedId, setSelectedId] = useState(null);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [batchState, setBatchState] = useState("idle");
+  const [activeSection, setActiveSection] = useState("overview");
 
   useEffect(() => {
     setSelectedId((current) =>
@@ -439,21 +765,78 @@ export default function App() {
     );
   }, [devices]);
 
+  useEffect(() => {
+    setSelectedIds((current) => current.filter((id) => devices.some((device) => device.device_id === id)));
+  }, [devices]);
+
+  const toggleSelected = (deviceId) => {
+    setSelectedIds((current) => current.includes(deviceId)
+      ? current.filter((id) => id !== deviceId)
+      : [...current, deviceId]);
+  };
+
+  const toggleAll = (deviceIds) => {
+    setSelectedIds((current) => deviceIds.every((id) => current.includes(id))
+      ? current.filter((id) => !deviceIds.includes(id))
+      : [...new Set([...current, ...deviceIds])]);
+  };
+
+  const pollBatch = async (taskId) => {
+    setBatchState("refreshing");
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const response = await fetch(`/api/v1/batch-tasks/${encodeURIComponent(taskId)}`, { cache: "no-store" });
+      const task = await readJson(response);
+      if (!response.ok) break;
+      setTasks((current) => current.map((item) => item.task_id === taskId ? task : item));
+      if (BATCH_TERMINAL_STATES.has(task.aggregate_state)) break;
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+    }
+    setBatchState("idle");
+  };
+
+  const createBatch = async ({ deviceIds, commandType, params }) => {
+    setBatchState("submitting");
+    try {
+      const response = await fetch("/api/v1/batch-tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({ device_ids: deviceIds, command_type: commandType, params }),
+      });
+      const task = await readJson(response);
+      if (!response.ok || !task.task_id) throw new Error("batch_failed");
+      setTasks((current) => [...current.filter((item) => item.task_id !== task.task_id), task]);
+      setActiveSection("tasks");
+      window.location.hash = "tasks";
+      await pollBatch(task.task_id);
+    } catch {
+      setBatchState("error");
+    }
+  };
+
   return (
     <>
       <a className="skip-link" href="#main-content">{t("skip.link")}</a>
-      <Topbar transport={transport} />
+      <Topbar transport={transport} activeSection={activeSection} onNavigate={setActiveSection} />
       <main id="main-content" className="app-shell">
         <OverviewSection devices={devices} health={health} onRefresh={refreshSnapshot} />
         <DevicesSection
           devices={devices}
           featureGates={health?.feature_gates}
           selectedId={selectedId}
+          selectedIds={selectedIds}
           onSelect={setSelectedId}
+          onToggle={toggleSelected}
+          onToggleAll={toggleAll}
+          onClearSelection={() => setSelectedIds([])}
           onDeviceAdded={refreshSnapshot}
           onChanged={refreshSnapshot}
+          onCreateBatch={createBatch}
+          batchState={batchState}
         />
-        <EventsSection events={events} />
+        <TasksSection tasks={tasks} refreshing={batchState === "refreshing"} />
+        <AuditSection events={events} />
+        <SystemSection health={health} />
       </main>
       <footer className="footer-bar">
         <span>LifeOS / Web Bridge</span>

@@ -15,14 +15,15 @@
 
 | 证据层 | 状态 | 范围 |
 | --- | --- | --- |
-| 既有 Brain 确定性回归 | PASS | Python 3.12：`brain/tests` 64 passed；不调用真实 provider。 |
+| 既有 Brain 确定性回归 | PASS | `brain/tests` 67 passed；不调用真实 provider。 |
 | 新增 Bridge/API/恢复测试 | PASS | `make test`：Bridge 132 passed；覆盖显示确认、500 ms 帧龄拒绝、重复帧不续期、维护确认过期、签名镜像流式复核和 rollout 重启待确认。 |
 | 固件 host 安全与恢复测试 | PASS | host C++ 测试通过，包含固件更新 begin/chunk/commit、校验失败和故障路径；不是物理 OTA。 |
-| ESP-IDF production/HIL 构建 | NOT TESTED | 本轮 `IDF_PATH` 未配置，未取得目标构建证据。 |
+| ESP-IDF production/OTA 构建 | PASS | 固定 ESP-IDF 5.5.4；production 与 `ota_ab_v1` profile 均构建成功，OTA app 大小 `0x76720`，最小 slot `0x400000`。这不是设备 OTA/回滚证据。 |
 | Web 构建/API fake 联调 | PASS | Vite production build 通过；FastAPI/TestClient 覆盖 viewer/display/lease 路径。 |
+| 浏览器 Fake E2E | PASS | Playwright 验证五个主页面区域、设备多选、批量 `control.status`、逐设备 `completed`、行为/语音提交、Audit 事件和 System gates；控制台 0 error/0 warning。 |
 | 浏览器真实交互 E2E | NOT TESTED | 未运行 Playwright 或人工浏览器验收。 |
 | 真实 provider | NOT TESTED | 本轮不调用。 |
-| 真实媒体与连续手控 | BLOCKED | USB 枚举身份为 `1C:DB:D4:BA:43:40`，但 `/dev/cu.usbmodem2101` 只见 HIL 启动标记，零运动 hello 探测未收到 `hello.device`。 |
+| 真实媒体与连续手控 | BLOCKED | USB 枚举身份为 `1C:DB:D4:BA:43:40`；授权串口恢复刷写后 Hash 校验通过，但 `/dev/cu.usbmodem2101` 仍未返回 `hello.device`。 |
 | 真实签名升级/断电回滚 | NOT TESTED | 需要可恢复布局、信任配置及独立硬件验收。 |
 
 ## 本轮验证命令
@@ -32,10 +33,11 @@ PYTHONDONTWRITEBYTECODE=1 PYTEST_ADDOPTS='-p no:cacheprovider' make test
 PYTHONPATH=. python3 tools/scan_usb_devices.py --probe --timeout 2 --grace 3 --json
 ```
 
-`make test` 还通过 Brain 64、Phase 1 unittest 10、模拟器 nominal replay、全部 JSON Schema、
+`make test` 还通过 Brain 67、Phase 1 unittest 10、模拟器 nominal replay、全部 JSON Schema、
 离线 Sub2API contract 和离线 Codex protocol contract。USB 探测会复位 CDC 外设，但不发送
-运动、维护或刷写命令；本轮探测结果为 `no-response`，因此没有执行实体运动、固件写入或
-分区迁移。
+运动或维护命令。本轮在单独授权后执行了 production 串口恢复刷写并保存写前备份；没有
+执行 A/B 分区迁移、Web OTA、实体运动或物理断电回滚。刷写后仍为 `no-response`，不能记为
+设备验收通过。
 
 ## 必须保留的回归场景
 

@@ -3,7 +3,7 @@
 ## Source of truth
 
 - Status: Draft
-- Last refreshed: 2026-08-30
+- Last refreshed: 2026-09-17
 - Primary product surfaces: fleet overview, device list, device console, batch tasks, audit and diagnostics
 - Evidence reviewed: `docs/product-requirements.md`, `docs/architecture.md`,
   `docs/protocol.md`, `docs/security.md`, `docs/roadmap.md`, `docs/testing.md`,

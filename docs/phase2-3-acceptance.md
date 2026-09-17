@@ -15,6 +15,11 @@
 | P2.4 本地指标与发布边界 | PASS（host-only metrics）；真实 fault injection/release gate 未测试 | `brain/metrics.py`、本报告 |
 | `/v1/models` / `/v1/responses` 真实 smoke、真实 TLS/网关兼容性 | NOT TESTED | 未注入凭据；默认不发起真实请求 |
 
+Brain API 已补齐生产生命周期代码：默认生成 host thread，支持
+`LIFEOS_THREAD_ID` / `LIFEOS_CHECKPOINT_PATH`，启动时调用 provider `/v1/models`
+健康检查，并将真实 graph thread 绑定到 `ProviderRequest`。这些路径已有确定性 mock 测试；
+真实 provider 连接仍保持 NOT TESTED。
+
 阶段 2 的关键安全结论：provider 失败进入 `DEGRADED_LOCAL`，不启动或回退本机 Codex；未知行为、越权工具、原始硬件字段、过期/重复副作用均在主机边界拒绝；checkpoint 只保存受限摘要，不保存 API key、原始事件 payload 或上游完整响应体；设备投影使用 `contracts/phase1/envelope.schema.json` 的 canonical `lifeos.v1` 字段。
 
 ## 阶段 3 进度
@@ -34,8 +39,8 @@ make web-check
 make firmware-test
 ```
 
-最近一次整仓运行结果：brain **64 passed**；Bridge **48 passed**；固件宿主测试
-（lifeos/protocol/manual_control_v1/servo_io）全部通过；Phase 1 replay **10 passed**
+最近一次整仓运行结果：brain **67 passed**；Bridge **132 passed**；固件宿主测试
+（lifeos/protocol/manual_control_v1/servo_io/firmware update）全部通过；Phase 1 replay **10 passed**
 且 nominal replay `accepted=2,rejected=0`；全部 schema、Web 语法、Sub2API offline
 contract 和 Codex offline contract 通过。运行环境为系统 Python 3.9；仅有既存的
 LibreSSL/LangGraph warning，没有测试失败。

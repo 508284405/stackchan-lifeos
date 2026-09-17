@@ -13,7 +13,9 @@ from bridge.api import create_app
 
 
 def build_app():
-    bridge = Bridge(feature_gates={"usb_add": True, "media": True})
+    bridge = Bridge(
+        feature_gates={"usb_add": True, "media": True, "behavior": True, "speech": True}
+    )
     transport = FakeTransport(
         capabilities={
             "status",
@@ -25,6 +27,8 @@ def build_app():
             "imu",
             "display",
             "camera",
+            "behavior",
+            "speech",
         }
     )
     bridge.discover(transport.candidate())
@@ -66,6 +70,8 @@ async def test_reconnect():
             "imu",
             "display",
             "camera",
+            "behavior",
+            "speech",
         },
     )
     session = await bridge.connect("stackchan-fake-01", transport)

@@ -364,6 +364,64 @@ h4 { margin-bottom: 0; font-size: 0.82rem; font-weight: 650; }
 .usb-scan-item[data-state="in-use"] .usb-item-state { color: var(--blue); }
 .usb-item-added { color: var(--accent); font-size: 0.75rem; }
 
+.device-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+.device-select-control { display: grid; place-items: center; }
+.device-select-control input { width: 1rem; height: 1rem; accent-color: var(--blue); }
+.device-row-main { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0.75rem; min-width: 0; padding: 0; border: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
+
+.batch-action-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.75rem 1rem; align-items: center; margin: 0 0 1rem; padding: 0.8rem 1rem; border: 1px solid var(--line-soft); border-radius: var(--radius); background: var(--surface); }
+.batch-selection-summary, .batch-action-controls { display: flex; align-items: center; gap: 0.65rem; flex-wrap: wrap; }
+.batch-action-controls { justify-content: flex-end; }
+.batch-count { font-size: 0.8rem; color: var(--muted); }
+.text-button { padding: 0; border: 0; background: transparent; color: var(--blue); cursor: pointer; font: inherit; font-size: 0.76rem; }
+.text-button:disabled { color: var(--faint); cursor: not-allowed; }
+.batch-command-select select, .intent-form select, .intent-form textarea { width: 100%; border: 1px solid var(--line); border-radius: 6px; padding: 0.55rem 0.65rem; color: var(--text); background: var(--surface-strong); font: inherit; }
+.batch-message { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 0.76rem; }
+
+.intent-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.9rem; }
+.intent-form { display: grid; gap: 0.7rem; padding: 0.9rem; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--surface-strong); }
+.intent-form-heading { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.intent-form-heading h5 { margin: 0; font-size: 0.86rem; }
+.intent-capability { color: var(--faint); font: 0.68rem ui-monospace, monospace; }
+.intent-form label { display: grid; gap: 0.35rem; color: var(--muted); font-size: 0.74rem; }
+.intent-form input[type="range"] { width: 100%; }
+.range-value, .intent-status { color: var(--faint); font-size: 0.7rem; }
+.intent-status { margin: 0; }
+
+.task-list { display: grid; gap: 1rem; }
+.task-card { padding: 1rem 1.15rem; border: 1px solid var(--line-soft); border-radius: var(--radius); background: var(--surface); }
+.task-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+.task-card-heading p, .task-card-heading h3 { margin: 0; }
+.task-card-heading h3 { margin-top: 0.2rem; font-size: 0.96rem; }
+.task-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.8rem; margin: 1rem 0; }
+.task-summary div { min-width: 0; }
+.task-summary dt { color: var(--faint); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.task-summary dd { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
+.task-table-wrap { overflow-x: auto; }
+.task-table { width: 100%; border-collapse: collapse; font-size: 0.76rem; }
+.task-table th, .task-table td { padding: 0.55rem 0.65rem; border-top: 1px solid var(--line-soft); text-align: left; vertical-align: top; }
+.task-table th { color: var(--faint); font-weight: 600; }
+
+.system-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.system-boundary { width: fit-content; padding: 0.25rem 0.5rem; border-radius: 999px; background: var(--surface-strong); color: var(--muted); font-size: 0.72rem; }
+.system-boundary[data-state="ok"] { color: var(--accent); }
+.system-boundary[data-state="warn"] { color: var(--amber); }
+.system-gates { margin-top: 1rem; }
+.gate-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.55rem; margin: 0; padding: 0; list-style: none; }
+.gate-list li { display: flex; justify-content: space-between; gap: 0.8rem; padding: 0.55rem 0.65rem; border: 1px solid var(--line-soft); border-radius: 6px; font-size: 0.72rem; }
+.gate-list li strong { color: var(--faint); white-space: nowrap; }
+.gate-list li[data-state="enabled"] strong { color: var(--accent); }
+.gate-list li[data-state="disabled"] strong { color: var(--muted); }
+.diagnostics-status { margin: 0.7rem 0 0; color: var(--muted); font-size: 0.74rem; }
+
+@media (max-width: 900px) {
+  .intent-grid, .system-grid { grid-template-columns: 1fr; }
+  .gate-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .batch-action-bar { grid-template-columns: 1fr; }
+  .batch-action-controls { justify-content: flex-start; }
+}
+
 @media (max-width: 720px) {
   .usb-scan-item { grid-template-columns: 1fr; gap: 0.3rem; }
+  .task-summary, .gate-list { grid-template-columns: 1fr; }
 }

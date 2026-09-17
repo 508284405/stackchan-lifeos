@@ -188,6 +188,9 @@ def build_cognitive_graph(
 
         started = monotonic()
         try:
+            bind_thread = getattr(provider, "bind_thread", None)
+            if callable(bind_thread):
+                bind_thread(data["thread_id"])
             candidates = await provider.decide(event, state)
             provider_result = getattr(provider, "last_result", None)
             tool_intents = list(getattr(provider, "last_tool_intents", []))

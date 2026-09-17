@@ -93,6 +93,27 @@ def test_provider_returns_validated_intents():
     assert [i.name for i in intents] == ["greet"]
 
 
+def test_graph_binds_provider_request_to_the_actual_thread():
+    provider = Sub2APIProvider(
+        _config(),
+        transport=ScriptedTransport(
+            payload={"id": "r", "intents": [{"name": "idle", "priority": 1}]}
+        ),
+    )
+
+    asyncio.run(
+        run_cognitive_cycle(
+            LifeEvent(kind="user", text="hello"),
+            LifeState(),
+            provider=provider,
+            thread_id="thread-provider-binding",
+        )
+    )
+
+    assert provider.last_plan is not None
+    assert provider.last_plan.request.thread_id == "thread-provider-binding"
+
+
 def test_provider_exposes_local_tool_intents_in_validated_plan():
     provider = Sub2APIProvider(
         _config(),
